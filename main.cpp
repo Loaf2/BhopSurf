@@ -14,6 +14,7 @@ namespace fs = std::filesystem;
 #include<algorithm>
 #include<cmath>
 #include<limits>
+#include<random>
 #include<string>
 #include<vector>
 #include<glad/glad.h>
@@ -73,6 +74,48 @@ std::vector<std::uint8_t> makeConcreteJumpWav()
 		float crack = noise * std::exp(-time * 55.0f);
 		float sample = (thump * 0.6f + crack * 0.4f) * envelope * 0.8f;
 		std::int16_t pcm = static_cast<std::int16_t>(glm::clamp(sample, -1.0f, 1.0f) * 32767.0f);
+		write16(44 + static_cast<std::size_t>(i) * 2, static_cast<std::uint16_t>(pcm));
+	}
+	return wav;
+}
+
+std::vector<std::uint8_t> makeAimTargetHitWav()
+{
+	constexpr std::uint32_t sampleRate = 22050;
+	constexpr std::uint32_t sampleCount = sampleRate / 7;
+	constexpr std::uint32_t dataSize = sampleCount * sizeof(std::int16_t);
+	std::vector<std::uint8_t> wav(44 + dataSize, 0);
+	auto write16 = [&wav](std::size_t offset, std::uint16_t value)
+	{
+		wav[offset] = static_cast<std::uint8_t>(value & 0xff);
+		wav[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
+	};
+	auto write32 = [&wav](std::size_t offset, std::uint32_t value)
+	{
+		wav[offset] = static_cast<std::uint8_t>(value & 0xff);
+		wav[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
+		wav[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xff);
+		wav[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xff);
+	};
+	std::memcpy(wav.data(), "RIFF", 4);
+	write32(4, 36 + dataSize);
+	std::memcpy(wav.data() + 8, "WAVEfmt ", 8);
+	write32(16, 16);
+	write16(20, 1);
+	write16(22, 1);
+	write32(24, sampleRate);
+	write32(28, sampleRate * sizeof(std::int16_t));
+	write16(32, sizeof(std::int16_t));
+	write16(34, 16);
+	std::memcpy(wav.data() + 36, "data", 4);
+	write32(40, dataSize);
+	for (std::uint32_t i = 0; i < sampleCount; ++i)
+	{
+		float time = static_cast<float>(i) / sampleRate;
+		float envelope = std::exp(-time * 20.0f);
+		float chime = std::sin(6.2831853f * 880.0f * time) * 0.65f +
+			std::sin(6.2831853f * 1320.0f * time) * 0.35f;
+		std::int16_t pcm = static_cast<std::int16_t>(glm::clamp(chime * envelope * 0.55f, -1.0f, 1.0f) * 32767.0f);
 		write16(44 + static_cast<std::size_t>(i) * 2, static_cast<std::uint16_t>(pcm));
 	}
 	return wav;
@@ -180,7 +223,7 @@ int main()
 	(
 		windowWidth,
 		windowHeight,
-		"YoutubeOpenGL",
+		"Aim Trainer",
 		nativeMode ? primaryMonitor : nullptr,
 		nullptr
 	);
@@ -545,6 +588,47 @@ void main()
 	const float cameraToPlayerBallOffset = cameraGroundY - ballGroundY;
 	const float playerBallVisualScale = 1.0f;
 	const float playerBallCollisionRadius = ballRadius * playerBallVisualScale;
+	const float aimTrainerMinX = -7.0f;
+	const float aimTrainerMaxX = 7.0f;
+	const float aimTrainerMinZ = -20.0f;
+	const float aimTrainerMaxZ = -6.0f;
+	std::array<glm::vec3, 3> aimTargets =
+	{
+		glm::vec3(-4.0f, ballGroundY + 3.0f, -26.0f),
+		glm::vec3(0.0f, ballGroundY + 5.0f, -26.0f),
+		glm::vec3(4.0f, ballGroundY + 3.0f, -26.0f)
+	};
+	std::mt19937 aimTargetRandomEngine(std::random_device{}());
+	std::uniform_real_distribution<float> aimTargetX(aimTrainerMinX, aimTrainerMaxX);
+	std::uniform_real_distribution<float> aimTargetY(ballGroundY + 2.0f, ballGroundY + 8.0f);
+	std::uniform_real_distribution<float> aimTargetZ(-30.0f, -23.0f);
+	auto respawnAimTarget = [&](std::size_t targetIndex)
+	{
+		glm::vec3 previousPosition = aimTargets[targetIndex];
+		for (int attempt = 0; attempt < 32; ++attempt)
+		{
+			glm::vec3 candidate(aimTargetX(aimTargetRandomEngine), aimTargetY(aimTargetRandomEngine), aimTargetZ(aimTargetRandomEngine));
+			if (glm::length(candidate - previousPosition) < 2.5f)
+				continue;
+
+			bool overlapsAnotherTarget = false;
+			for (std::size_t otherIndex = 0; otherIndex < aimTargets.size(); ++otherIndex)
+			{
+				if (otherIndex != targetIndex && glm::length(candidate - aimTargets[otherIndex]) < 2.5f)
+				{
+					overlapsAnotherTarget = true;
+					break;
+				}
+			}
+			if (!overlapsAnotherTarget)
+			{
+				aimTargets[targetIndex] = candidate;
+				return;
+			}
+		}
+
+		aimTargets[targetIndex] = glm::vec3(aimTargetX(aimTargetRandomEngine), aimTargetY(aimTargetRandomEngine), aimTargetZ(aimTargetRandomEngine));
+	};
 	glm::mat4 playerBallRotation(1.0f);
 	auto keepInsidePlatform = [&](glm::vec3& position, glm::vec3& velocity, float radius)
 	{
@@ -584,6 +668,7 @@ void main()
 	int activeBall = 0;
 	bool previousX = false;
 	bool previousZ = false;
+	bool previousLeftMouse = false;
 	float cameraVerticalVelocity = 0.0f;
 	float jumpBufferRemaining = 0.0f;
 	auto resolveCameraBallCollisions = [&]()
@@ -681,6 +766,7 @@ void main()
 	int displayedFps = 0;
 	glm::vec3 previousCameraPosition = camera.Position;
 	std::vector<std::uint8_t> jumpSound = makeConcreteJumpWav();
+	std::vector<std::uint8_t> aimTargetHitSound = makeAimTargetHitWav();
 	float fpsCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
 	std::string fpsLabel = "FPS: 0";
 	std::vector<GLfloat> fpsVertices = buildFpsVertices(fpsLabel, framebufferWidth, framebufferHeight, fpsCellSize);
@@ -893,9 +979,48 @@ void main()
 		glm::vec3 simulationOrientation = camera.Orientation;
 		glm::vec3 cameraForward = glm::normalize(simulationOrientation);
 		glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, camera.Up));
-		camera.Position = playerBallRenderPosition - cameraForward * 5.0f - cameraRight * 0.7f + glm::vec3(0.0f, 1.7f, 0.0f);
-		camera.Orientation = glm::normalize(playerBallRenderPosition + glm::vec3(0.0f, 2.0f, 0.0f) - camera.Position);
+		bool aimTrainerActive =
+			playerBallRenderPosition.x >= aimTrainerMinX && playerBallRenderPosition.x <= aimTrainerMaxX &&
+			playerBallRenderPosition.z >= aimTrainerMinZ && playerBallRenderPosition.z <= aimTrainerMaxZ;
+		if (aimTrainerActive)
+		{
+			camera.Position = playerBallRenderPosition + glm::vec3(0.0f, 1.6f, 0.0f);
+			camera.Orientation = simulationOrientation;
+		}
+		else
+		{
+			camera.Position = playerBallRenderPosition - cameraForward * 5.0f - cameraRight * 0.7f + glm::vec3(0.0f, 1.7f, 0.0f);
+			camera.Orientation = glm::normalize(playerBallRenderPosition + glm::vec3(0.0f, 2.0f, 0.0f) - camera.Position);
+		}
 		camera.updateMatrix(45.0f, 0.1f, 500.0f);
+
+		bool leftMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+		if (aimTrainerActive && leftMousePressed && !previousLeftMouse)
+		{
+			glm::vec3 shotDirection = glm::normalize(camera.Orientation);
+			float closestHitDistance = std::numeric_limits<float>::max();
+			int hitTargetIndex = -1;
+			for (std::size_t targetIndex = 0; targetIndex < aimTargets.size(); ++targetIndex)
+			{
+				glm::vec3 toTarget = aimTargets[targetIndex] - camera.Position;
+				float alongRay = glm::dot(toTarget, shotDirection);
+				if (alongRay <= 0.0f || alongRay >= closestHitDistance)
+					continue;
+
+				float perpendicularDistanceSquared = glm::dot(toTarget, toTarget) - alongRay * alongRay;
+				if (perpendicularDistanceSquared <= ballRadius * ballRadius)
+				{
+					closestHitDistance = alongRay;
+					hitTargetIndex = static_cast<int>(targetIndex);
+				}
+			}
+			if (hitTargetIndex >= 0)
+			{
+				respawnAimTarget(static_cast<std::size_t>(hitTargetIndex));
+				PlaySoundA(reinterpret_cast<LPCSTR>(aimTargetHitSound.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+			}
+		}
+		previousLeftMouse = leftMousePressed;
 
 		glm::mat4 skyboxProjection = glm::perspective(glm::radians(45.0f),
 			static_cast<float>(camera.width) / static_cast<float>(camera.height), 0.1f, 500.0f);
@@ -967,6 +1092,8 @@ void main()
 			glm::mat4 renderRotation = ballIndex == playerBallIndex ? playerBallRotation : glm::mat4(1.0f);
 			orbModel.DrawWithTint(shaderProgram, camera, ballRenderPosition, glm::vec3(1.0f, 0.12f, 0.12f), renderScale, renderRotation);
 		}
+		for (const glm::vec3& targetPosition : aimTargets)
+			orbModel.DrawWithTint(shaderProgram, camera, targetPosition, glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(1.0f));
 		camera.Position = simulationCameraPosition;
 		camera.Orientation = simulationOrientation;
 

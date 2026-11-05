@@ -373,6 +373,7 @@
             "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\um\\mcx.h",
             "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\um\\imm.h",
             "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\um\\ime_cmodes.h",
+            "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\um\\mmsystem.h",
             "d:\\cppprojects\\opengl\\project1\\project1\\model.h",
             "d:\\cppprojects\\opengl\\project1\\project1\\include\\json\\json.h",
             "d:\\microsoft visual studio\\18\\community\\vc\\tools\\msvc\\14.51.36231\\include\\functional",
@@ -622,6 +623,7 @@
             "d:\\microsoft visual studio\\18\\community\\vc\\tools\\msvc\\14.51.36231\\include\\iostream",
             "d:\\cppprojects\\opengl\\project1\\project1\\texture.h",
             "d:\\cppprojects\\opengl\\project1\\project1\\include\\stb\\stb_image.h",
+            "d:\\microsoft visual studio\\18\\community\\vc\\tools\\msvc\\14.51.36231\\include\\random",
             "d:\\cppprojects\\opengl\\project1\\project1\\include\\stb\\stb_image.h"
         ],
         "ImportedModules": [],
