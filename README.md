@@ -1,1 +1,1 @@
-Bhop Surf
+Bhop Surf Aim Training
