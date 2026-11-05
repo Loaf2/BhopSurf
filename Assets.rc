@@ -1,0 +1,13 @@
+101 RCDATA "default.vert"
+102 RCDATA "default.frag"
+
+201 RCDATA "Resources/models/plane/plane.gltf"
+202 RCDATA "Resources/models/plane/plane.bin"
+203 RCDATA "Resources/models/plane/baseColor.png"
+
+301 RCDATA "Resources/models/orb/redorb.gltf"
+302 RCDATA "Resources/models/orb/redorb.bin"
+303 RCDATA "Resources/models/orb/basecolor.png"
+
+401 RCDATA "Resources/models/prism/prism.gltf"
+402 RCDATA "Resources/models/prism/prism.bin"

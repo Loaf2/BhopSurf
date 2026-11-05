@@ -1,4 +1,6 @@
 #include<filesystem>
+#include<fstream>
+#include<algorithm>
 #define NOMINMAX
 #include<Windows.h>
 #include<mmsystem.h>
@@ -6,6 +8,110 @@
 #include<cstring>
 #pragma comment(lib, "winmm.lib")
 namespace fs = std::filesystem;
+
+bool extractEmbeddedResource(HMODULE module, int resourceId, const fs::path& destination)
+{
+	HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+	if (resource == nullptr)
+		return false;
+
+	HGLOBAL loadedResource = LoadResource(module, resource);
+	if (loadedResource == nullptr)
+		return false;
+	const void* resourceBytes = LockResource(loadedResource);
+	DWORD resourceSize = SizeofResource(module, resource);
+	if (resourceBytes == nullptr || resourceSize == 0)
+		return false;
+
+	std::error_code error;
+	fs::create_directories(destination.parent_path(), error);
+	if (error)
+		return false;
+
+	std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+	if (!output)
+		return false;
+	output.write(static_cast<const char*>(resourceBytes), static_cast<std::streamsize>(resourceSize));
+	return output.good();
+}
+
+struct TemporaryAssetDirectory
+{
+	fs::path path;
+	~TemporaryAssetDirectory()
+	{
+		if (!path.empty())
+		{
+			std::error_code error;
+			fs::remove_all(path, error);
+		}
+	}
+};
+
+fs::path getAimHighScorePath()
+{
+	wchar_t localAppData[MAX_PATH] = {};
+	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
+		? fs::path(localAppData)
+		: fs::temp_directory_path();
+	return dataRoot / L"AimTrainer" / L"rank_highscore_v2.txt";
+}
+
+fs::path getMouseSensitivityPath()
+{
+	wchar_t localAppData[MAX_PATH] = {};
+	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
+		? fs::path(localAppData)
+		: fs::temp_directory_path();
+	return dataRoot / L"AimTrainer" / L"sensitivity.txt";
+}
+
+float loadMouseSensitivity(const fs::path& sensitivityPath)
+{
+	std::ifstream input(sensitivityPath);
+	float sensitivity = 0.1f;
+	if (input >> sensitivity && sensitivity >= 0.02f && sensitivity <= 0.30f)
+		return sensitivity;
+	return 0.1f;
+}
+
+void saveMouseSensitivity(const fs::path& sensitivityPath, float sensitivity)
+{
+	std::error_code error;
+	fs::create_directories(sensitivityPath.parent_path(), error);
+	if (error)
+		return;
+
+	std::ofstream output(sensitivityPath, std::ios::trunc);
+	if (output)
+	{
+		output.precision(8);
+		output << sensitivity;
+	}
+}
+
+int loadAimHighScore(const fs::path& scorePath)
+{
+	std::ifstream input(scorePath);
+	int score = 0;
+	if (input >> score)
+		return score < 0 ? 0 : score;
+	return 0;
+}
+
+void saveAimHighScore(const fs::path& scorePath, int score)
+{
+	std::error_code error;
+	fs::create_directories(scorePath.parent_path(), error);
+	if (error)
+		return;
+
+	std::ofstream output(scorePath, std::ios::trunc);
+	if (output)
+		output << score;
+}
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include"Model.h"
@@ -127,10 +233,33 @@ void processInput(GLFWwindow *window);
 std::array<const char*, 5> getFpsGlyph(char character)
 {
 	if (character == 'F') return { "111", "100", "110", "100", "100" };
+	if (character == 'G') return { "011", "100", "101", "101", "011" };
 	if (character == 'P') return { "110", "101", "110", "100", "100" };
 	if (character == 'S') return { "011", "100", "010", "001", "110" };
 	if (character == 'D') return { "110", "101", "101", "101", "110" };
+	if (character == 'A') return { "010", "101", "111", "101", "101" };
+	if (character == 'C') return { "011", "100", "100", "100", "011" };
+	if (character == 'I') return { "111", "010", "010", "010", "111" };
+	if (character == 'J') return { "001", "001", "001", "101", "010" };
+	if (character == 'K') return { "101", "101", "110", "101", "101" };
+	if (character == 'L') return { "100", "100", "100", "100", "111" };
+	if (character == 'M') return { "101", "111", "111", "101", "101" };
+	if (character == 'N') return { "101", "111", "111", "111", "101" };
+	if (character == 'O') return { "010", "101", "101", "101", "010" };
+	if (character == 'R') return { "110", "101", "110", "101", "101" };
+	if (character == 'V') return { "101", "101", "101", "101", "010" };
+	if (character == 'W') return { "101", "101", "111", "111", "101" };
+	if (character == 'X') return { "101", "101", "010", "101", "101" };
+	if (character == 'Y') return { "101", "101", "010", "010", "010" };
+	if (character == 'Z') return { "111", "001", "010", "100", "111" };
+	if (character == 'U') return { "101", "101", "101", "101", "111" };
+	if (character == 'E') return { "111", "100", "110", "100", "111" };
+	if (character == 'T') return { "111", "010", "010", "010", "010" };
+	if (character == 'H') return { "101", "101", "111", "101", "101" };
+	if (character == 'B') return { "110", "101", "110", "101", "110" };
 	if (character == ':') return { "000", "010", "000", "010", "000" };
+	if (character == '>') return { "100", "010", "001", "010", "100" };
+	if (character == '/') return { "001", "001", "010", "100", "100" };
 	if (character == '0') return { "111", "101", "101", "101", "111" };
 	if (character == '1') return { "010", "110", "010", "010", "111" };
 	if (character == '2') return { "110", "001", "010", "100", "111" };
@@ -144,7 +273,7 @@ std::array<const char*, 5> getFpsGlyph(char character)
 	return { "000", "000", "000", "000", "000" };
 }
 
-std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int height, float cellSize, float topOffset = 16.0f)
+std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int height, float cellSize, float topOffset = 16.0f, float leftOffset = 16.0f)
 {
 	std::vector<GLfloat> vertices;
 	if (width <= 0 || height <= 0)
@@ -160,7 +289,7 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 				if (glyph[row][column] != '1')
 					continue;
 
-				float pixelX = 16.0f + (static_cast<float>(characterIndex) * 4.0f + column + 0.5f) * cellSize;
+				float pixelX = leftOffset + (static_cast<float>(characterIndex) * 4.0f + column + 0.5f) * cellSize;
 				float pixelY = topOffset + (row + 0.5f) * cellSize;
 				vertices.push_back(2.0f * pixelX / static_cast<float>(width) - 1.0f);
 				vertices.push_back(1.0f - 2.0f * pixelY / static_cast<float>(height));
@@ -464,7 +593,47 @@ void main()
 			fs::exists(root / "Resources" / "models" / "orb" / "redorb.gltf");
 	};
 
-	fs::path assetRoot = fs::current_path();
+	struct EmbeddedAssetFile
+	{
+		int resourceId;
+		const wchar_t* relativePath;
+	};
+	const std::array<EmbeddedAssetFile, 10> embeddedAssetFiles =
+	{{
+		{ 101, L"default.vert" },
+		{ 102, L"default.frag" },
+		{ 201, L"Resources/models/plane/plane.gltf" },
+		{ 202, L"Resources/models/plane/plane.bin" },
+		{ 203, L"Resources/models/plane/baseColor.png" },
+		{ 301, L"Resources/models/orb/redorb.gltf" },
+		{ 302, L"Resources/models/orb/redorb.bin" },
+		{ 303, L"Resources/models/orb/basecolor.png" },
+		{ 401, L"Resources/models/prism/prism.gltf" },
+		{ 402, L"Resources/models/prism/prism.bin" }
+	}};
+
+	fs::path assetRoot;
+	TemporaryAssetDirectory temporaryAssetDirectory;
+	std::error_code tempDirectoryError;
+	fs::path tempAssetParent = fs::temp_directory_path(tempDirectoryError);
+	bool embeddedAssetsExtracted = !tempDirectoryError;
+	if (embeddedAssetsExtracted)
+	{
+		assetRoot = tempAssetParent / "AimTrainer" / std::to_wstring(GetCurrentProcessId());
+		temporaryAssetDirectory.path = assetRoot;
+		HMODULE applicationModule = GetModuleHandleW(nullptr);
+		for (const EmbeddedAssetFile& asset : embeddedAssetFiles)
+		{
+			if (!extractEmbeddedResource(applicationModule, asset.resourceId, assetRoot / asset.relativePath))
+			{
+				embeddedAssetsExtracted = false;
+				break;
+			}
+		}
+	}
+	if (!embeddedAssetsExtracted)
+		assetRoot = fs::current_path();
+
 	if (!hasRequiredAssets(assetRoot))
 	{
 		if (hasRequiredAssets(executableDirectory))
@@ -507,6 +676,8 @@ void main()
 	constexpr float dayNightCycleSeconds = 180.0f;
 
 	Camera camera(framebufferWidth, framebufferHeight, glm::vec3(0.0f, 2.5f, 6.0f));
+	const fs::path mouseSensitivityPath = getMouseSensitivityPath();
+	camera.sensitivity = loadMouseSensitivity(mouseSensitivityPath);
 	glfwSetWindowUserPointer(window, &camera);
 
 	fs::path modelPath = assetRoot / "Resources" / "models" / "plane" / "plane.gltf";
@@ -629,6 +800,47 @@ void main()
 
 		aimTargets[targetIndex] = glm::vec3(aimTargetX(aimTargetRandomEngine), aimTargetY(aimTargetRandomEngine), aimTargetZ(aimTargetRandomEngine));
 	};
+	constexpr double aimTaskDurationSeconds = 30.0;
+	const fs::path aimHighScorePath = getAimHighScorePath();
+	constexpr double aimTaskRetryCooldownSeconds = 1.0;
+	int aimTaskScore = 0;
+	int aimHighScore = loadAimHighScore(aimHighScorePath);
+	struct AimRank
+	{
+		const char* name;
+		int minimumScore;
+		glm::vec4 color;
+	};
+	const std::array<AimRank, 12> aimRanks = {{
+		{ "WOOD", 0, glm::vec4(0.48f, 0.27f, 0.12f, 1.0f) },
+		{ "BRONZE", 15, glm::vec4(0.72f, 0.38f, 0.20f, 1.0f) },
+		{ "SILVER", 30, glm::vec4(0.78f, 0.81f, 0.84f, 1.0f) },
+		{ "GOLD", 45, glm::vec4(1.0f, 0.74f, 0.10f, 1.0f) },
+		{ "PLATINUM", 60, glm::vec4(0.83f, 0.88f, 0.90f, 1.0f) },
+		{ "DIAMOND", 75, glm::vec4(0.48f, 0.86f, 1.0f, 1.0f) },
+		{ "EMERALD", 90, glm::vec4(0.08f, 0.62f, 0.28f, 1.0f) },
+		{ "AMETHYST", 105, glm::vec4(0.58f, 0.26f, 0.82f, 1.0f) },
+		{ "REIDITE", 120, glm::vec4(0.55f, 0.24f, 0.20f, 1.0f) },
+		{ "OBSIDIAN", 135, glm::vec4(0.24f, 0.19f, 0.31f, 1.0f) },
+		{ "TITANIUM", 150, glm::vec4(0.62f, 0.66f, 0.70f, 1.0f) },
+		{ "COLOSSEUM", 165, glm::vec4(0.72f, 0.60f, 0.40f, 1.0f) }
+	}};
+	auto getCurrentAimRank = [&]() -> const AimRank&
+	{
+		const AimRank* rank = &aimRanks.front();
+		for (const AimRank& candidate : aimRanks)
+		{
+			if (aimHighScore < candidate.minimumScore)
+				break;
+			rank = &candidate;
+		}
+		return *rank;
+	};
+	bool aimTaskRunning = false;
+	bool aimTaskFinished = false;
+	bool wasAimTrainerActive = false;
+	double aimTaskStartTime = 0.0;
+	double aimTaskFinishedTime = 0.0;
 	glm::mat4 playerBallRotation(1.0f);
 	auto keepInsidePlatform = [&](glm::vec3& position, glm::vec3& velocity, float radius)
 	{
@@ -669,6 +881,14 @@ void main()
 	bool previousX = false;
 	bool previousZ = false;
 	bool previousLeftMouse = false;
+	bool gamePaused = false;
+	bool showingControls = false;
+	bool showingRanks = false;
+	bool showingScenarioRanks = false;
+	bool previousEscape = false;
+	bool previousPauseMouse = false;
+	bool draggingSensitivity = false;
+	double pauseStartedAt = 0.0;
 	float cameraVerticalVelocity = 0.0f;
 	float jumpBufferRemaining = 0.0f;
 	auto resolveCameraBallCollisions = [&]()
@@ -772,7 +992,17 @@ void main()
 	std::vector<GLfloat> fpsVertices = buildFpsVertices(fpsLabel, framebufferWidth, framebufferHeight, fpsCellSize);
 	std::string speedLabel = "SPD: 0";
 	std::vector<GLfloat> speedVertices = buildFpsVertices(speedLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 7.0f * fpsCellSize);
+	std::string aimTaskLabel = "T:30 H:0 B:" + std::to_string(aimHighScore);
+	std::vector<GLfloat> aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 14.0f * fpsCellSize);
 	fpsVertices.insert(fpsVertices.end(), speedVertices.begin(), speedVertices.end());
+	fpsVertices.insert(fpsVertices.end(), aimTaskVertices.begin(), aimTaskVertices.end());
+	GLint rankVertexStart = 0;
+	GLsizei rankVertexCount = 0;
+	std::array<GLint, 12> rankLadderVertexStarts{};
+	std::array<GLsizei, 12> rankLadderVertexCounts{};
+	std::array<glm::vec4, 12> rankLadderColors{};
+	glm::vec4 currentRankColor = getCurrentAimRank().color;
+	bool rankLadderVisible = false;
 	glBindBuffer(GL_ARRAY_BUFFER, fpsVBO);
 	glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(fpsVertices.size() * sizeof(GLfloat)), fpsVertices.data(), GL_DYNAMIC_DRAW);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -782,9 +1012,179 @@ void main()
 		processInput(window);
 
 		double currentTime = glfwGetTime();
-		float deltaTime = static_cast<float>(std::min(currentTime - previousTime, 0.05));
+		bool escapePressed = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+		bool pauseStateChanged = false;
+		bool rankMenuPage = gamePaused && (showingRanks || showingScenarioRanks);
+		if (escapePressed && !previousEscape)
+		{
+			pauseStateChanged = true;
+			if (rankMenuPage)
+			{
+				showingRanks = false;
+				showingScenarioRanks = false;
+			}
+			else if (gamePaused)
+			{
+				gamePaused = false;
+				showingControls = false;
+				showingRanks = false;
+				showingScenarioRanks = false;
+				camera.mouseInitialized = false;
+				glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+				if (aimTaskRunning)
+					aimTaskStartTime += currentTime - pauseStartedAt;
+			}
+			else
+			{
+				gamePaused = true;
+				showingControls = false;
+				showingRanks = false;
+				showingScenarioRanks = false;
+				glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+				pauseStartedAt = currentTime;
+				previousCameraPosition = camera.Position;
+			}
+		}
+		previousEscape = escapePressed;
+		rankMenuPage = gamePaused && (showingRanks || showingScenarioRanks);
+		bool pauseMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+			if (gamePaused && showingControls && !rankMenuPage && pauseMousePressed && !previousPauseMouse)
+		{
+			int sliderFramebufferWidth = 0;
+			int sliderFramebufferHeight = 0;
+			int sliderWindowWidth = 0;
+			int sliderWindowHeight = 0;
+			glfwGetFramebufferSize(window, &sliderFramebufferWidth, &sliderFramebufferHeight);
+			glfwGetWindowSize(window, &sliderWindowWidth, &sliderWindowHeight);
+			double cursorX = 0.0;
+			double cursorY = 0.0;
+			glfwGetCursorPos(window, &cursorX, &cursorY);
+			if (sliderWindowWidth > 0 && sliderWindowHeight > 0 && sliderFramebufferWidth > 0 && sliderFramebufferHeight > 0)
+			{
+				float clickX = static_cast<float>(cursorX * sliderFramebufferWidth / sliderWindowWidth);
+				float clickY = static_cast<float>(cursorY * sliderFramebufferHeight / sliderWindowHeight);
+				float cellSize = std::max(2.0f, static_cast<float>(sliderFramebufferHeight) / 300.0f);
+				float sliderLeft = static_cast<float>(sliderFramebufferWidth) * 0.5f - 55.0f * cellSize;
+				float sliderRight = static_cast<float>(sliderFramebufferWidth) * 0.5f + 55.0f * cellSize;
+				float sliderY = static_cast<float>(sliderFramebufferHeight) * 0.30f + 106.0f * cellSize;
+				if (clickX >= sliderLeft - 8.0f * cellSize && clickX <= sliderRight + 8.0f * cellSize &&
+					clickY >= sliderY - 5.0f * cellSize && clickY <= sliderY + 5.0f * cellSize)
+					draggingSensitivity = true;
+			}
+		}
+		if (!pauseMousePressed)
+			draggingSensitivity = false;
+			if (gamePaused && showingControls && !rankMenuPage && draggingSensitivity && pauseMousePressed)
+		{
+			int sliderFramebufferWidth = 0;
+			int sliderFramebufferHeight = 0;
+			int sliderWindowWidth = 0;
+			int sliderWindowHeight = 0;
+			glfwGetFramebufferSize(window, &sliderFramebufferWidth, &sliderFramebufferHeight);
+			glfwGetWindowSize(window, &sliderWindowWidth, &sliderWindowHeight);
+			double cursorX = 0.0;
+			double cursorY = 0.0;
+			glfwGetCursorPos(window, &cursorX, &cursorY);
+			if (sliderWindowWidth > 0 && sliderFramebufferWidth > 0 && sliderFramebufferHeight > 0)
+			{
+				float clickX = static_cast<float>(cursorX * sliderFramebufferWidth / sliderWindowWidth);
+				float cellSize = std::max(2.0f, static_cast<float>(sliderFramebufferHeight) / 300.0f);
+				float sliderLeft = static_cast<float>(sliderFramebufferWidth) * 0.5f - 55.0f * cellSize;
+				float sliderWidth = 110.0f * cellSize;
+				float amount = glm::clamp((clickX - sliderLeft) / sliderWidth, 0.0f, 1.0f);
+				camera.sensitivity = 0.02f + amount * 0.28f;
+				saveMouseSensitivity(mouseSensitivityPath, camera.sensitivity);
+				pauseStateChanged = true;
+			}
+		}
+		if (gamePaused && pauseMousePressed && !previousPauseMouse)
+		{
+			int clickFramebufferWidth = 0;
+			int clickFramebufferHeight = 0;
+			int clickWindowWidth = 0;
+			int clickWindowHeight = 0;
+			glfwGetFramebufferSize(window, &clickFramebufferWidth, &clickFramebufferHeight);
+			glfwGetWindowSize(window, &clickWindowWidth, &clickWindowHeight);
+			double cursorX = 0.0;
+			double cursorY = 0.0;
+			glfwGetCursorPos(window, &cursorX, &cursorY);
+			if (clickWindowWidth > 0 && clickWindowHeight > 0 && clickFramebufferWidth > 0 && clickFramebufferHeight > 0)
+			{
+				float clickX = static_cast<float>(cursorX * clickFramebufferWidth / clickWindowWidth);
+				float clickY = static_cast<float>(cursorY * clickFramebufferHeight / clickWindowHeight);
+				float menuCellSize = std::max(2.0f, static_cast<float>(clickFramebufferHeight) / 300.0f);
+				bool clickedRankMenuPage = showingRanks || showingScenarioRanks;
+				if (clickedRankMenuPage)
+				{
+					float backTop = static_cast<float>(clickFramebufferHeight) - 48.0f * menuCellSize;
+					if (clickX >= static_cast<float>(clickFramebufferWidth) * 0.5f - 22.0f * menuCellSize &&
+						clickX <= static_cast<float>(clickFramebufferWidth) * 0.5f + 22.0f * menuCellSize &&
+						clickY >= backTop - 5.0f * menuCellSize && clickY <= backTop + 12.0f * menuCellSize)
+					{
+						showingRanks = false;
+						showingScenarioRanks = false;
+						pauseStateChanged = true;
+					}
+				}
+				else
+				{
+					auto buttonHit = [&](const std::string& label, float top, float scale)
+					{
+						float width = static_cast<float>(label.size() * 4 - 1) * menuCellSize * scale;
+						return clickX >= (clickFramebufferWidth - width) * 0.5f - 8.0f * menuCellSize &&
+							clickX <= (clickFramebufferWidth + width) * 0.5f + 8.0f * menuCellSize &&
+							clickY >= top - 5.0f * menuCellSize && clickY <= top + 12.0f * menuCellSize;
+					};
+					float pauseTop = static_cast<float>(clickFramebufferHeight) * 0.30f;
+				if (buttonHit("RESUME", pauseTop + 10.0f * menuCellSize, 1.5f))
+				{
+					gamePaused = false;
+					showingControls = false;
+					showingRanks = false;
+					showingScenarioRanks = false;
+					camera.mouseInitialized = false;
+					glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+					if (aimTaskRunning)
+						aimTaskStartTime += currentTime - pauseStartedAt;
+					pauseStateChanged = true;
+				}
+				else if (buttonHit("SCENARIO RANKS", pauseTop + 60.0f * menuCellSize, 1.5f))
+					{
+						showingScenarioRanks = true;
+						showingRanks = showingControls = false;
+						pauseStateChanged = true;
+					}
+					else if (buttonHit("RANKS", pauseTop + 40.0f * menuCellSize, 1.5f))
+					{
+						showingRanks = true;
+						showingControls = showingScenarioRanks = false;
+						pauseStateChanged = true;
+					}
+					else if (buttonHit("CONTROLS", pauseTop + 20.0f * menuCellSize, 1.5f))
+					{
+						showingControls = !showingControls;
+						showingRanks = showingScenarioRanks = false;
+						pauseStateChanged = true;
+					}
+					else if (buttonHit("EXIT", pauseTop + 124.0f * menuCellSize, 1.5f))
+					{
+						glfwSetWindowShouldClose(window, GLFW_TRUE);
+					}
+				}
+			}
+		}
+		rankMenuPage = gamePaused && (showingRanks || showingScenarioRanks);
+		previousPauseMouse = pauseMousePressed;
+		double aimTaskClockTime = gamePaused ? pauseStartedAt : currentTime;
+		double elapsedSincePreviousFrame = currentTime - previousTime;
+		float deltaTime = gamePaused ? 0.0f : static_cast<float>(std::min(elapsedSincePreviousFrame, 0.05));
 		previousTime = currentTime;
-		physicsAccumulator += deltaTime;
+		if (gamePaused)
+			physicsAccumulator = 0.0f;
+		else
+			physicsAccumulator += deltaTime;
+		if (gamePaused)
+			dayNightStartTime += elapsedSincePreviousFrame;
 		++fpsFrameCount;
 		bool fpsTextChanged = false;
 		if (currentTime - fpsWindowStart >= 1.0)
@@ -795,24 +1195,184 @@ void main()
 			fpsLabel = "FPS: " + std::to_string(displayedFps);
 			fpsTextChanged = true;
 		}
-		if (currentTime - hudWindowStart >= 0.1 || fpsTextChanged)
+		if (currentTime - hudWindowStart >= 0.1 || fpsTextChanged || pauseStateChanged)
 		{
+			rankVertexStart = 0;
+			rankVertexCount = 0;
+			rankLadderVertexStarts.fill(0);
+			rankLadderVertexCounts.fill(0);
+			rankLadderVisible = rankMenuPage && showingRanks;
+			currentRankColor = getCurrentAimRank().color;
 			hudWindowStart = currentTime;
 			float horizontalSpeed = glm::length(glm::vec2(camera.horizontalVelocity.x, camera.horizontalVelocity.z));
 			speedLabel = "SPD: " + std::to_string(static_cast<int>(std::round(horizontalSpeed)));
 			glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
 			fpsCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
-			fpsVertices = buildFpsVertices(fpsLabel, framebufferWidth, framebufferHeight, fpsCellSize);
+			fpsVertices = rankMenuPage
+				? std::vector<GLfloat>()
+				: buildFpsVertices(fpsLabel, framebufferWidth, framebufferHeight, fpsCellSize);
 			speedVertices = buildFpsVertices(speedLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 7.0f * fpsCellSize);
-			fpsVertices.insert(fpsVertices.end(), speedVertices.begin(), speedVertices.end());
+			int aimTaskSecondsRemaining = 30;
+			if (aimTaskFinished)
+				aimTaskSecondsRemaining = 0;
+			else if (aimTaskRunning)
+				aimTaskSecondsRemaining = static_cast<int>(std::ceil(std::max(0.0, aimTaskDurationSeconds - (aimTaskClockTime - aimTaskStartTime))));
+			aimTaskLabel = "T:" + std::to_string(aimTaskSecondsRemaining) +
+				" H:" + std::to_string(aimTaskScore) +
+				" B:" + std::to_string(aimHighScore);
+			aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 14.0f * fpsCellSize);
+			if (!rankMenuPage)
+			{
+				fpsVertices.insert(fpsVertices.end(), speedVertices.begin(), speedVertices.end());
+				fpsVertices.insert(fpsVertices.end(), aimTaskVertices.begin(), aimTaskVertices.end());
+				std::vector<GLfloat> rankVertices = buildFpsVertices(
+					"R: " + std::string(getCurrentAimRank().name),
+					framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 21.0f * fpsCellSize);
+				rankVertexStart = static_cast<GLint>(fpsVertices.size() / 2);
+				rankVertexCount = static_cast<GLsizei>(rankVertices.size() / 2);
+				fpsVertices.insert(fpsVertices.end(), rankVertices.begin(), rankVertices.end());
+			}
+			int currentRankMinimumScore = getCurrentAimRank().minimumScore;
+			int nextRankMinimumScore = aimRanks.back().minimumScore;
+			if (currentRankMinimumScore < aimRanks.back().minimumScore)
+			{
+				for (const AimRank& rank : aimRanks)
+				{
+					if (rank.minimumScore > aimHighScore)
+					{
+						nextRankMinimumScore = rank.minimumScore;
+						break;
+					}
+				}
+			}
+			if (rankLadderVisible)
+			{
+				auto appendCenteredRankText = [&](const std::string& text, float cellSize, float top)
+				{
+					float width = static_cast<float>(text.size() * 4 - 1) * cellSize;
+					std::vector<GLfloat> vertices = buildFpsVertices(text, framebufferWidth, framebufferHeight,
+						cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f);
+					fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
+				};
+				appendCenteredRankText("RANKS", fpsCellSize * 1.5f, static_cast<float>(framebufferHeight) * 0.12f);
+				appendCenteredRankText("CURRENT " + std::string(getCurrentAimRank().name), fpsCellSize,
+					static_cast<float>(framebufferHeight) * 0.19f);
+				std::size_t currentRankIndex = static_cast<std::size_t>(&getCurrentAimRank() - aimRanks.data());
+				for (std::size_t rankIndex = 0; rankIndex < aimRanks.size(); ++rankIndex)
+				{
+					float rowTop = static_cast<float>(framebufferHeight) * 0.25f + static_cast<float>(rankIndex) * 4.5f * fpsCellSize;
+					const AimRank& rank = aimRanks[rankIndex];
+					std::string rankLine = std::string(rank.name) + " " + std::to_string(rank.minimumScore);
+					float rankCellSize = fpsCellSize * 0.8f;
+					float rankLineWidth = static_cast<float>(rankLine.size() * 4 - 1) * rankCellSize;
+					std::vector<GLfloat> nameVertices = buildFpsVertices(rankLine,
+						framebufferWidth, framebufferHeight, rankCellSize, rowTop,
+						(static_cast<float>(framebufferWidth) - rankLineWidth) * 0.5f);
+					std::size_t startVertex = fpsVertices.size() / 2;
+					rankLadderColors[rankIndex] = rank.color;
+					fpsVertices.insert(fpsVertices.end(), nameVertices.begin(), nameVertices.end());
+					if (rankIndex == currentRankIndex)
+					{
+						std::vector<GLfloat> checkVertices = buildFpsVertices(">", framebufferWidth, framebufferHeight,
+							rankCellSize, rowTop, (static_cast<float>(framebufferWidth) - rankLineWidth) * 0.5f - 6.0f * rankCellSize);
+						fpsVertices.insert(fpsVertices.end(), checkVertices.begin(), checkVertices.end());
+					}
+					rankLadderVertexStarts[rankIndex] = static_cast<GLint>(startVertex);
+					rankLadderVertexCounts[rankIndex] = static_cast<GLsizei>(fpsVertices.size() / 2 - startVertex);
+				}
+				std::string progressText = aimHighScore >= aimRanks.back().minimumScore
+					? "MAX RANK"
+					: "NEXT " + std::to_string(std::max(0, nextRankMinimumScore - aimHighScore));
+				appendCenteredRankText(progressText, fpsCellSize, static_cast<float>(framebufferHeight) * 0.25f + 12.0f * 4.5f * fpsCellSize);
+			}
+			if (gamePaused && !rankMenuPage)
+			{
+				const std::string pauseLabel = "PAUSED";
+				float pauseCellSize = fpsCellSize * 2.0f;
+				float pauseHeight = 5.0f * pauseCellSize;
+				float pauseTop = static_cast<float>(framebufferHeight) * 0.30f;
+				auto appendCenteredPauseText = [&](const std::string& text, float cellSize, float top)
+				{
+					float textWidth = static_cast<float>(text.size() * 4 - 1) * cellSize;
+					std::vector<GLfloat> textVertices = buildFpsVertices(
+						text, framebufferWidth, framebufferHeight, cellSize, top,
+						(static_cast<float>(framebufferWidth) - textWidth) * 0.5f);
+					fpsVertices.insert(fpsVertices.end(), textVertices.begin(), textVertices.end());
+				};
+				appendCenteredPauseText(pauseLabel, pauseCellSize, pauseTop);
+				appendCenteredPauseText("RESUME", fpsCellSize * 1.5f, pauseTop + 10.0f * fpsCellSize);
+				appendCenteredPauseText("CONTROLS", fpsCellSize * 1.5f, pauseTop + pauseHeight + 10.0f * fpsCellSize);
+				appendCenteredPauseText("RANKS", fpsCellSize * 1.5f, pauseTop + 40.0f * fpsCellSize);
+				appendCenteredPauseText("SCENARIO RANKS", fpsCellSize * 1.5f, pauseTop + 60.0f * fpsCellSize);
+				appendCenteredPauseText("EXIT", fpsCellSize * 1.5f, pauseTop + 124.0f * fpsCellSize);
+				if (showingControls)
+				{
+					const std::array<std::string, 7> controlsText = {
+						"WASD MOVE", "MOUSE LOOK", "SPACE JUMP", "LMB SHOOT",
+						"X/Z BALL", "F FULLSCREEN", "ESC RESUME"
+					};
+					float controlsTop = pauseTop + pauseHeight + 23.0f * fpsCellSize;
+					for (std::size_t controlIndex = 0; controlIndex < controlsText.size(); ++controlIndex)
+						appendCenteredPauseText(controlsText[controlIndex], fpsCellSize, controlsTop + static_cast<float>(controlIndex) * 7.0f * fpsCellSize);
+					int sensitivityPercent = static_cast<int>(std::round((camera.sensitivity - 0.02f) / 0.28f * 100.0f));
+					appendCenteredPauseText("SENSITIVITY: " + std::to_string(sensitivityPercent), fpsCellSize,
+						pauseTop + 82.0f * fpsCellSize);
+					float sliderLeft = static_cast<float>(framebufferWidth) * 0.5f - 55.0f * fpsCellSize;
+					float sliderWidth = 110.0f * fpsCellSize;
+					float sliderY = pauseTop + 106.0f * fpsCellSize;
+					for (int tick = 0; tick <= 40; ++tick)
+					{
+						float pixelX = sliderLeft + sliderWidth * static_cast<float>(tick) / 40.0f;
+						fpsVertices.push_back(2.0f * pixelX / static_cast<float>(framebufferWidth) - 1.0f);
+						fpsVertices.push_back(1.0f - 2.0f * sliderY / static_cast<float>(framebufferHeight));
+					}
+					float sliderAmount = glm::clamp((camera.sensitivity - 0.02f) / 0.28f, 0.0f, 1.0f);
+					float knobX = sliderLeft + sliderWidth * sliderAmount;
+					std::vector<GLfloat> knobVertices = buildFpsVertices(
+						"I", framebufferWidth, framebufferHeight, fpsCellSize * 2.0f,
+						sliderY - 5.0f * fpsCellSize, knobX - 3.0f * fpsCellSize);
+					fpsVertices.insert(fpsVertices.end(), knobVertices.begin(), knobVertices.end());
+				}
+			}
+			if (rankMenuPage)
+			{
+				float menuCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
+				std::vector<GLfloat> backVertices = buildFpsVertices("BACK", framebufferWidth, framebufferHeight,
+					menuCellSize * 1.5f, static_cast<float>(framebufferHeight) - 48.0f * menuCellSize,
+					(static_cast<float>(framebufferWidth) - 17.0f * menuCellSize) * 0.5f);
+				fpsVertices.insert(fpsVertices.end(), backVertices.begin(), backVertices.end());
+				if (showingScenarioRanks)
+				{
+					auto appendCenteredScenarioText = [&](const std::string& text, float cellSize, float top)
+					{
+						float width = static_cast<float>(text.size() * 4 - 1) * cellSize;
+						std::vector<GLfloat> vertices = buildFpsVertices(text, framebufferWidth, framebufferHeight,
+							cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f);
+						fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
+					};
+					appendCenteredScenarioText("THREE BALLS", menuCellSize * 2.0f, static_cast<float>(framebufferHeight) * 0.28f);
+					appendCenteredScenarioText("HIGH SCORE", menuCellSize, static_cast<float>(framebufferHeight) * 0.38f);
+					std::string scenarioRankName = getCurrentAimRank().name;
+					float rankTextWidth = static_cast<float>(scenarioRankName.size() * 4 - 1) * menuCellSize * 2.0f;
+					std::vector<GLfloat> scenarioRankVertices = buildFpsVertices(scenarioRankName, framebufferWidth, framebufferHeight,
+						menuCellSize * 2.0f, static_cast<float>(framebufferHeight) * 0.48f,
+						(static_cast<float>(framebufferWidth) - rankTextWidth) * 0.5f);
+					rankVertexStart = static_cast<GLint>(fpsVertices.size() / 2);
+					rankVertexCount = static_cast<GLsizei>(scenarioRankVertices.size() / 2);
+					currentRankColor = getCurrentAimRank().color;
+					fpsVertices.insert(fpsVertices.end(), scenarioRankVertices.begin(), scenarioRankVertices.end());
+					appendCenteredScenarioText("SCORE " + std::to_string(aimHighScore), menuCellSize, static_cast<float>(framebufferHeight) * 0.60f);
+				}
+			}
 			glBindBuffer(GL_ARRAY_BUFFER, fpsVBO);
 			glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(fpsVertices.size() * sizeof(GLfloat)), fpsVertices.data(), GL_DYNAMIC_DRAW);
 			glBindBuffer(GL_ARRAY_BUFFER, 0);
 		}
 
-		camera.Inputs(window, true);
+		if (!gamePaused)
+			camera.Inputs(window, true);
 
-		bool cameraJumpPressed = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+		bool cameraJumpPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
 		jumpBufferRemaining = cameraJumpPressed
 			? 0.12f
 			: jumpBufferRemaining;
@@ -927,17 +1487,17 @@ void main()
 			physicsAccumulator -= step;
 		}
 
-		bool xPressed = glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS;
+		bool xPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS;
 		if (xPressed && !previousX)
 			activeBall = (activeBall + 1) % static_cast<int>(balls.size());
 		previousX = xPressed;
 
-		bool zPressed = glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
+		bool zPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
 		if (zPressed && !previousZ)
 			activeBall = (activeBall + static_cast<int>(balls.size()) - 1) % static_cast<int>(balls.size());
 		previousZ = zPressed;
 
-		for (std::size_t ballIndex = 0; ballIndex < balls.size(); ++ballIndex)
+		for (std::size_t ballIndex = 0; !gamePaused && ballIndex < balls.size(); ++ballIndex)
 		{
 			if (ballIndex == playerBallIndex)
 				continue;
@@ -967,7 +1527,8 @@ void main()
 			camera.horizontalVelocity.z
 		);
 		balls[playerBallIndex].grounded = camera.Position.y <= cameraGroundY + 0.001f && cameraVerticalVelocity <= 0.0f;
-		resolveCameraBallCollisions();
+		if (!gamePaused)
+			resolveCameraBallCollisions();
 
 		glClearColor(0.07f, 0.13f, 0.17f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -982,6 +1543,27 @@ void main()
 		bool aimTrainerActive =
 			playerBallRenderPosition.x >= aimTrainerMinX && playerBallRenderPosition.x <= aimTrainerMaxX &&
 			playerBallRenderPosition.z >= aimTrainerMinZ && playerBallRenderPosition.z <= aimTrainerMaxZ;
+		if (!gamePaused && aimTrainerActive && !aimTaskRunning &&
+			(!aimTaskFinished || currentTime - aimTaskFinishedTime >= aimTaskRetryCooldownSeconds))
+		{
+			aimTaskScore = 0;
+			aimTaskFinished = false;
+			aimTaskRunning = true;
+			aimTaskStartTime = currentTime;
+		}
+		if (!gamePaused)
+			wasAimTrainerActive = aimTrainerActive;
+		if (!gamePaused && aimTaskRunning && aimTaskClockTime - aimTaskStartTime >= aimTaskDurationSeconds)
+		{
+			aimTaskRunning = false;
+			aimTaskFinished = true;
+			aimTaskFinishedTime = currentTime;
+			if (aimTaskScore > aimHighScore)
+			{
+				aimHighScore = aimTaskScore;
+				saveAimHighScore(aimHighScorePath, aimHighScore);
+			}
+		}
 		if (aimTrainerActive)
 		{
 			camera.Position = playerBallRenderPosition + glm::vec3(0.0f, 1.6f, 0.0f);
@@ -995,7 +1577,7 @@ void main()
 		camera.updateMatrix(45.0f, 0.1f, 500.0f);
 
 		bool leftMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-		if (aimTrainerActive && leftMousePressed && !previousLeftMouse)
+		if (!gamePaused && aimTrainerActive && aimTaskRunning && leftMousePressed && !previousLeftMouse)
 		{
 			glm::vec3 shotDirection = glm::normalize(camera.Orientation);
 			float closestHitDistance = std::numeric_limits<float>::max();
@@ -1016,6 +1598,7 @@ void main()
 			}
 			if (hitTargetIndex >= 0)
 			{
+				++aimTaskScore;
 				respawnAimTarget(static_cast<std::size_t>(hitTargetIndex));
 				PlaySoundA(reinterpret_cast<LPCSTR>(aimTargetHitSound.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
 			}
@@ -1107,12 +1690,15 @@ void main()
 		float crosshairAspect = crosshairHeight > 0
 			? static_cast<float>(crosshairWidth) / static_cast<float>(crosshairHeight)
 			: 1.0f;
-		glUniform1f(crosshairAspectLocation, crosshairAspect);
-		glBindVertexArray(crosshairVAO);
-		glUniform4f(crosshairColorLocation, 0.0f, 1.0f, 1.0f, 1.0f);
-		glLineWidth(1.5f);
-		glDrawArrays(GL_LINES, 0, 4);
-		glBindVertexArray(0);
+		if (!gamePaused)
+		{
+			glUniform1f(crosshairAspectLocation, crosshairAspect);
+			glBindVertexArray(crosshairVAO);
+			glUniform4f(crosshairColorLocation, 0.0f, 1.0f, 1.0f, 1.0f);
+			glLineWidth(1.5f);
+			glDrawArrays(GL_LINES, 0, 4);
+			glBindVertexArray(0);
+		}
 		glUniform1f(crosshairAspectLocation, 1.0f);
 		glUniform1f(crosshairPointSizeLocation, fpsCellSize + 2.0f);
 		glUniform4f(crosshairColorLocation, 0.0f, 0.0f, 0.0f, 0.85f);
@@ -1121,6 +1707,19 @@ void main()
 		glUniform1f(crosshairPointSizeLocation, fpsCellSize);
 		glUniform4f(crosshairColorLocation, 1.0f, 1.0f, 1.0f, 1.0f);
 		glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(fpsVertices.size() / 2));
+		glUniform1f(crosshairPointSizeLocation, fpsCellSize + 1.0f);
+		for (std::size_t rankIndex = 0; rankIndex < rankLadderVertexStarts.size(); ++rankIndex)
+		{
+			if (rankLadderVertexCounts[rankIndex] == 0)
+				continue;
+			glUniform4fv(crosshairColorLocation, 1, glm::value_ptr(rankLadderColors[rankIndex]));
+			glDrawArrays(GL_POINTS, rankLadderVertexStarts[rankIndex], rankLadderVertexCounts[rankIndex]);
+		}
+		if (rankVertexCount > 0)
+		{
+			glUniform4fv(crosshairColorLocation, 1, glm::value_ptr(currentRankColor));
+			glDrawArrays(GL_POINTS, rankVertexStart, rankVertexCount);
+		}
 		glBindVertexArray(0);
 		glDisable(GL_BLEND);
 		glEnable(GL_DEPTH_TEST);
@@ -1151,14 +1750,14 @@ void processInput(GLFWwindow *window)
 	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS)
 		glfwSetWindowShouldClose(window, true);
 
-	static bool escapeWasPressed = false;
+	static bool fullscreenWasPressed = false;
 	static int windowedX = 100;
 	static int windowedY = 100;
 	static int windowedWidth = defaultWidth;
 	static int windowedHeight = defaultHeight;
 
-	bool escapePressed = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-	if (escapePressed && !escapeWasPressed)
+	bool fullscreenPressed = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
+	if (fullscreenPressed && !fullscreenWasPressed)
 	{
 		if (glfwGetWindowMonitor(window) != nullptr)
 		{
@@ -1193,7 +1792,7 @@ void processInput(GLFWwindow *window)
 			}
 		}
 	}
-	escapeWasPressed = escapePressed;
+	fullscreenWasPressed = fullscreenPressed;
 };
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)
@@ -1208,4 +1807,4 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 			camera->height = height;
 		}
 	}
-};
+}

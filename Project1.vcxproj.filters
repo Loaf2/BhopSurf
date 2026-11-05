@@ -85,4 +85,9 @@
     <None Include="Directory.Build.props" />
     <None Include="Directory.Build.targets" />
   </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Assets.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
 </Project>

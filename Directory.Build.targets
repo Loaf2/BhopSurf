@@ -6,4 +6,9 @@
 	  <PreprocessorDefinitions>_CONSOLE;_UNICODE;UNICODE</PreprocessorDefinitions>
 	</ClCompile>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+	<Link>
+	  <GenerateDebugInformation>false</GenerateDebugInformation>
+	</Link>
+  </ItemDefinitionGroup>
 </Project>
