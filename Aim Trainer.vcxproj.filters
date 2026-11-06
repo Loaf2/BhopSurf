@@ -74,6 +74,9 @@
     <ClInclude Include="Texture.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="auth_api_config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="default.frag">
@@ -84,6 +87,12 @@
     </None>
     <None Include="Directory.Build.props" />
     <None Include="Directory.Build.targets" />
+    <None Include="AuthApi\appsettings.json" />
+    <None Include="AuthApi\AuthApi.csproj" />
+    <None Include="AuthApi\Program.cs" />
+    <None Include="AuthApi\README.md" />
+    <None Include="AuthApi\.gitignore" />
+    <None Include="AuthApi\Properties\launchSettings.json" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Assets.rc">

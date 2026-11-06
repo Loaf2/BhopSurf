@@ -375,6 +375,9 @@
             "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\um\\mcx.h",
             "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\um\\imm.h",
             "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\um\\ime_cmodes.h",
+            "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\um\\winhttp.h",
+            "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\shared\\pshpack8.h",
+            "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\shared\\poppack.h",
             "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\um\\mmsystem.h",
             "d:\\cppprojects\\opengl\\project1\\project1\\model.h",
             "d:\\cppprojects\\opengl\\project1\\project1\\include\\json\\json.h",
@@ -624,7 +627,15 @@
             "d:\\cppprojects\\opengl\\project1\\project1\\texture.h",
             "d:\\cppprojects\\opengl\\project1\\project1\\include\\stb\\stb_image.h",
             "d:\\microsoft visual studio\\18\\community\\vc\\tools\\msvc\\14.51.36231\\include\\random",
-            "d:\\cppprojects\\opengl\\project1\\project1\\include\\stb\\stb_image.h"
+            "d:\\microsoft visual studio\\18\\community\\vc\\tools\\msvc\\14.51.36231\\include\\thread",
+            "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\ucrt\\process.h",
+            "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\ucrt\\corecrt_startup.h",
+            "c:\\program files (x86)\\windows kits\\10\\include\\10.0.26100.0\\ucrt\\math.h",
+            "d:\\microsoft visual studio\\18\\community\\vc\\tools\\msvc\\14.51.36231\\include\\vcruntime_startup.h",
+            "d:\\microsoft visual studio\\18\\community\\vc\\tools\\msvc\\14.51.36231\\include\\stop_token",
+            "d:\\microsoft visual studio\\18\\community\\vc\\tools\\msvc\\14.51.36231\\include\\mutex",
+            "d:\\cppprojects\\opengl\\project1\\project1\\include\\stb\\stb_image.h",
+            "d:\\cppprojects\\opengl\\project1\\project1\\auth_api_config.h"
         ],
         "ImportedModules": [],
         "ImportedHeaderUnits": []

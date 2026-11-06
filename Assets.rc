@@ -1,3 +1,5 @@
+501 ICON "Resources/Ico.ico"
+
 101 RCDATA "default.vert"
 102 RCDATA "default.frag"
 

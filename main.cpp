@@ -1,12 +1,16 @@
 #include<filesystem>
 #include<fstream>
 #include<algorithm>
+#include<cmath>
+#include<vector>
 #define NOMINMAX
 #include<Windows.h>
+#include<winhttp.h>
 #include<mmsystem.h>
 #include<cstdint>
 #include<cstring>
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "winhttp.lib")
 namespace fs = std::filesystem;
 
 bool extractEmbeddedResource(HMODULE module, int resourceId, const fs::path& destination)
@@ -58,6 +62,26 @@ fs::path getAimHighScorePath()
 	return dataRoot / L"AimTrainer" / L"rank_highscore_v2.txt";
 }
 
+fs::path getTwoBallsHighScorePath()
+{
+	wchar_t localAppData[MAX_PATH] = {};
+	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
+		? fs::path(localAppData)
+		: fs::temp_directory_path();
+	return dataRoot / L"AimTrainer" / L"two_balls_highscore.txt";
+}
+
+fs::path getSixBallsHighScorePath()
+{
+	wchar_t localAppData[MAX_PATH] = {};
+	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
+		? fs::path(localAppData)
+		: fs::temp_directory_path();
+	return dataRoot / L"AimTrainer" / L"six_balls_highscore.txt";
+}
+
 fs::path getMouseSensitivityPath()
 {
 	wchar_t localAppData[MAX_PATH] = {};
@@ -66,6 +90,26 @@ fs::path getMouseSensitivityPath()
 		? fs::path(localAppData)
 		: fs::temp_directory_path();
 	return dataRoot / L"AimTrainer" / L"sensitivity.txt";
+}
+
+fs::path getAudioVolumePath()
+{
+	wchar_t localAppData[MAX_PATH] = {};
+	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
+		? fs::path(localAppData)
+		: fs::temp_directory_path();
+	return dataRoot / L"AimTrainer" / L"audio_volume.txt";
+}
+
+fs::path getAimTargetSizePath()
+{
+	wchar_t localAppData[MAX_PATH] = {};
+	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
+		? fs::path(localAppData)
+		: fs::temp_directory_path();
+	return dataRoot / L"AimTrainer" / L"target_size.txt";
 }
 
 float loadMouseSensitivity(const fs::path& sensitivityPath)
@@ -89,6 +133,68 @@ void saveMouseSensitivity(const fs::path& sensitivityPath, float sensitivity)
 	{
 		output.precision(8);
 		output << sensitivity;
+	}
+}
+
+float loadAimTargetSize(const fs::path& sizePath)
+{
+	std::ifstream input(sizePath);
+	float size = 1.0f;
+	if (input >> size && size >= 0.25f && size <= 1.0f)
+		return size;
+	return 1.0f;
+}
+
+void saveAimTargetSize(const fs::path& sizePath, float size)
+{
+	std::error_code error;
+	fs::create_directories(sizePath.parent_path(), error);
+	if (error)
+		return;
+	std::ofstream output(sizePath, std::ios::trunc);
+	if (output)
+	{
+		output.precision(8);
+		output << size;
+	}
+}
+
+float loadAudioVolume(const fs::path& volumePath)
+{
+	std::ifstream input(volumePath);
+	float volume = 1.0f;
+	if (input >> volume && volume >= 0.0f && volume <= 1.0f)
+		return volume;
+	return 1.0f;
+}
+
+void saveAudioVolume(const fs::path& volumePath, float volume)
+{
+	std::error_code error;
+	fs::create_directories(volumePath.parent_path(), error);
+	if (error)
+		return;
+	std::ofstream output(volumePath, std::ios::trunc);
+	if (output)
+	{
+		output.precision(8);
+		output << volume;
+	}
+}
+
+void setWavVolume(const std::vector<std::uint8_t>& source, std::vector<std::uint8_t>& destination, float volume)
+{
+	destination = source;
+	volume = std::clamp(volume, 0.0f, 1.0f);
+	for (std::size_t offset = 44; offset + 1 < source.size(); offset += 2)
+	{
+		std::uint16_t encodedSample = static_cast<std::uint16_t>(source[offset]) |
+			(static_cast<std::uint16_t>(source[offset + 1]) << 8);
+		std::int16_t sample = static_cast<std::int16_t>(encodedSample);
+		std::int16_t scaledSample = static_cast<std::int16_t>(std::round(static_cast<float>(sample) * volume));
+		std::uint16_t scaledEncoded = static_cast<std::uint16_t>(scaledSample);
+		destination[offset] = static_cast<std::uint8_t>(scaledEncoded & 0xff);
+		destination[offset + 1] = static_cast<std::uint8_t>((scaledEncoded >> 8) & 0xff);
 	}
 }
 
@@ -122,9 +228,16 @@ void saveAimHighScore(const fs::path& scorePath, int score)
 #include<limits>
 #include<random>
 #include<string>
+#include<string_view>
+#include<system_error>
+#include<thread>
+#include<mutex>
+#include<unordered_map>
 #include<vector>
 #include<glad/glad.h>
 #include<GLFW/glfw3.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include<GLFW/glfw3native.h>
 #include<stb/stb_image.h>
 #include<glm/glm.hpp>
 #include<glm/gtc/matrix_transform.hpp>
@@ -135,6 +248,7 @@ void saveAimHighScore(const fs::path& scorePath, int score)
 #include"VAO.h"
 #include"VBO.h"
 #include"EBO.h"
+#include"auth_api_config.h"
 
 const int defaultWidth = 800;
 const int defaultHeight = 800;
@@ -232,6 +346,32 @@ void processInput(GLFWwindow *window);
 
 std::array<const char*, 5> getFpsGlyph(char character)
 {
+	if (character == 'a') return { "000", "010", "101", "111", "101" };
+	if (character == 'b') return { "100", "100", "110", "101", "110" };
+	if (character == 'c') return { "000", "011", "100", "100", "011" };
+	if (character == 'd') return { "001", "001", "011", "101", "011" };
+	if (character == 'e') return { "000", "010", "101", "110", "011" };
+	if (character == 'f') return { "011", "010", "111", "010", "010" };
+	if (character == 'g') return { "000", "011", "101", "011", "001" };
+	if (character == 'h') return { "100", "100", "110", "101", "101" };
+	if (character == 'i') return { "010", "000", "110", "010", "111" };
+	if (character == 'j') return { "001", "000", "001", "101", "010" };
+	if (character == 'k') return { "100", "100", "101", "110", "101" };
+	if (character == 'l') return { "110", "010", "010", "010", "111" };
+	if (character == 'm') return { "000", "110", "111", "101", "101" };
+	if (character == 'n') return { "000", "110", "101", "101", "101" };
+	if (character == 'o') return { "000", "010", "101", "101", "010" };
+	if (character == 'p') return { "000", "110", "101", "110", "100" };
+	if (character == 'q') return { "000", "011", "101", "011", "001" };
+	if (character == 'r') return { "000", "101", "110", "100", "100" };
+	if (character == 's') return { "000", "011", "100", "010", "110" };
+	if (character == 't') return { "010", "111", "010", "010", "011" };
+	if (character == 'u') return { "000", "101", "101", "101", "011" };
+	if (character == 'v') return { "000", "101", "101", "101", "010" };
+	if (character == 'w') return { "000", "101", "101", "111", "101" };
+	if (character == 'x') return { "000", "101", "010", "010", "101" };
+	if (character == 'y') return { "000", "101", "011", "001", "110" };
+	if (character == 'z') return { "000", "111", "001", "010", "111" };
 	if (character == 'F') return { "111", "100", "110", "100", "100" };
 	if (character == 'G') return { "011", "100", "101", "101", "011" };
 	if (character == 'P') return { "110", "101", "110", "100", "100" };
@@ -253,13 +393,43 @@ std::array<const char*, 5> getFpsGlyph(char character)
 	if (character == 'Y') return { "101", "101", "010", "010", "010" };
 	if (character == 'Z') return { "111", "001", "010", "100", "111" };
 	if (character == 'U') return { "101", "101", "101", "101", "111" };
+	if (character == 'Q') return { "010", "101", "101", "011", "001" };
 	if (character == 'E') return { "111", "100", "110", "100", "111" };
 	if (character == 'T') return { "111", "010", "010", "010", "010" };
 	if (character == 'H') return { "101", "101", "111", "101", "101" };
 	if (character == 'B') return { "110", "101", "110", "101", "110" };
+	if (character == '@') return { "111", "101", "111", "100", "011" };
+	if (character == '.') return { "000", "000", "000", "000", "010" };
+	if (character == '_') return { "000", "000", "000", "000", "111" };
+	if (character == '-') return { "000", "000", "111", "000", "000" };
+	if (character == '+') return { "000", "010", "111", "010", "000" };
+	if (character == '*') return { "000", "101", "010", "101", "000" };
 	if (character == ':') return { "000", "010", "000", "010", "000" };
 	if (character == '>') return { "100", "010", "001", "010", "100" };
 	if (character == '/') return { "001", "001", "010", "100", "100" };
+	if (character == '!') return { "010", "010", "010", "000", "010" };
+	if (character == '"') return { "101", "101", "000", "000", "000" };
+	if (character == '#') return { "101", "111", "101", "111", "101" };
+	if (character == '$') return { "011", "110", "010", "011", "110" };
+	if (character == '%') return { "101", "001", "010", "100", "101" };
+	if (character == '&') return { "010", "101", "010", "101", "011" };
+	if (character == '\'') return { "010", "010", "000", "000", "000" };
+	if (character == '(') return { "001", "010", "010", "010", "001" };
+	if (character == ')') return { "100", "010", "010", "010", "100" };
+	if (character == ',') return { "000", "000", "000", "010", "100" };
+	if (character == ';') return { "000", "010", "000", "010", "100" };
+	if (character == '<') return { "001", "010", "100", "010", "001" };
+	if (character == '=') return { "000", "111", "000", "111", "000" };
+	if (character == '?') return { "110", "001", "010", "000", "010" };
+	if (character == '[') return { "011", "010", "010", "010", "011" };
+	if (character == '\\') return { "100", "100", "010", "001", "001" };
+	if (character == ']') return { "110", "010", "010", "010", "110" };
+	if (character == '^') return { "010", "101", "000", "000", "000" };
+	if (character == '`') return { "100", "010", "000", "000", "000" };
+	if (character == '{') return { "001", "010", "110", "010", "001" };
+	if (character == '|') return { "010", "010", "010", "010", "010" };
+	if (character == '}') return { "100", "010", "011", "010", "100" };
+	if (character == '~') return { "000", "010", "101", "000", "000" };
 	if (character == '0') return { "111", "101", "101", "101", "111" };
 	if (character == '1') return { "010", "110", "010", "010", "111" };
 	if (character == '2') return { "110", "001", "010", "100", "111" };
@@ -270,31 +440,410 @@ std::array<const char*, 5> getFpsGlyph(char character)
 	if (character == '7') return { "111", "001", "010", "010", "010" };
 	if (character == '8') return { "010", "101", "010", "101", "010" };
 	if (character == '9') return { "010", "101", "011", "001", "110" };
-	return { "000", "000", "000", "000", "000" };
+	if (character == ' ') return { "000", "000", "000", "000", "000" };
+	return { "110", "001", "010", "000", "010" };
 }
 
-std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int height, float cellSize, float topOffset = 16.0f, float leftOffset = 16.0f)
+enum class SignUpField
+{
+	Email,
+	Password,
+	ConfirmPassword
+};
+
+struct SignUpFormState
+{
+	std::string email;
+	std::string password;
+	std::string confirmPassword;
+	std::string status;
+	SignUpField focusedField = SignUpField::Email;
+	bool signInMode = false;
+	bool active = true;
+	bool submitRequested = false;
+	bool submitting = false;
+	bool complete = false;
+	bool showPassword = false;
+	bool resendRequested = false;
+	bool emailConfirmationPending = false;
+};
+
+SignUpFormState signUpForm;
+
+std::string& getFocusedSignUpText()
+{
+	if (signUpForm.focusedField == SignUpField::Password)
+		return signUpForm.password;
+	if (signUpForm.focusedField == SignUpField::ConfirmPassword)
+		return signUpForm.confirmPassword;
+	return signUpForm.email;
+}
+
+void signUpCharCallback(GLFWwindow*, unsigned int codepoint)
+{
+	if (!signUpForm.active || signUpForm.submitting || codepoint < 0x20 || codepoint > 0x7e)
+		return;
+
+	std::string& input = getFocusedSignUpText();
+	std::size_t maximumLength = signUpForm.focusedField == SignUpField::Email ? 254 : 128;
+	if (input.size() >= maximumLength)
+		return;
+
+	char character = static_cast<char>(codepoint);
+	if (signUpForm.focusedField == SignUpField::Email)
+	{
+		bool validEmailCharacter = (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') ||
+			character == '.' || character == '_' || character == '%' || character == '+' ||
+			character == '-' || character == '@';
+		if (!validEmailCharacter)
+			return;
+	}
+	input.push_back(character);
+}
+
+void signUpKeyCallback(GLFWwindow*, int key, int, int action, int mods)
+{
+	if (!signUpForm.active || signUpForm.submitting || (action != GLFW_PRESS && action != GLFW_REPEAT))
+		return;
+
+	if (key == GLFW_KEY_BACKSPACE)
+	{
+		std::string& input = getFocusedSignUpText();
+		if ((mods & GLFW_MOD_CONTROL) != 0)
+			input.clear();
+		else if (!input.empty())
+			input.pop_back();
+	}
+	else if (action == GLFW_PRESS && key == GLFW_KEY_TAB)
+	{
+		bool backwards = glfwGetKey(glfwGetCurrentContext(), GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+			glfwGetKey(glfwGetCurrentContext(), GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+		int field = static_cast<int>(signUpForm.focusedField);
+		int fieldCount = signUpForm.signInMode ? 2 : 3;
+		signUpForm.focusedField = static_cast<SignUpField>((field + (backwards ? fieldCount - 1 : 1)) % fieldCount);
+	}
+	else if (action == GLFW_PRESS && key == GLFW_KEY_ENTER)
+	{
+		signUpForm.submitRequested = true;
+	}
+}
+
+struct SignUpResult
+{
+	bool authenticated = false;
+	bool confirmationPending = false;
+	bool ranksSynchronized = false;
+	std::string message;
+	std::string sessionToken;
+	int aimBestScore = 0;
+	int twoBallsBestScore = 0;
+	int sixBallsBestScore = 0;
+};
+
+std::mutex signUpResultMutex;
+SignUpResult signUpResult;
+bool signUpResultReady = false;
+std::thread signUpAuthThread;
+
+bool isAuthApiConfigured()
+{
+	std::string_view baseUrl = auth_api_config::baseUrl;
+	bool secureUrl = baseUrl.starts_with("https://");
+	bool localDevelopmentUrl = baseUrl.starts_with("http://localhost") || baseUrl.starts_with("http://127.0.0.1");
+	return (secureUrl || localDevelopmentUrl) && baseUrl.find("YOUR-API-HOST") == std::string_view::npos;
+}
+
+std::wstring utf8ToWide(const std::string& value)
+{
+	if (value.empty())
+		return {};
+	int length = MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
+	if (length <= 0)
+		return {};
+	std::wstring converted(static_cast<std::size_t>(length), L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), converted.data(), length);
+	return converted;
+}
+
+struct ApiResponse
+{
+	DWORD statusCode = 0;
+	bool received = false;
+	std::string body;
+};
+
+ApiResponse sendApiRequest(const std::string& method, const std::string& path, const std::string& body,
+	const std::string& bearerToken = {})
+{
+	ApiResponse response;
+	std::wstring baseUrl = utf8ToWide(auth_api_config::baseUrl);
+	URL_COMPONENTS urlComponents{};
+	urlComponents.dwStructSize = sizeof(urlComponents);
+	urlComponents.dwHostNameLength = static_cast<DWORD>(-1);
+	urlComponents.dwUrlPathLength = static_cast<DWORD>(-1);
+	if (baseUrl.empty() || !WinHttpCrackUrl(baseUrl.c_str(), 0, 0, &urlComponents) ||
+		(urlComponents.nScheme != INTERNET_SCHEME_HTTPS && urlComponents.nScheme != INTERNET_SCHEME_HTTP) ||
+		urlComponents.dwHostNameLength == 0)
+		return response;
+
+	std::wstring host(urlComponents.lpszHostName, urlComponents.dwHostNameLength);
+	bool useHttps = urlComponents.nScheme == INTERNET_SCHEME_HTTPS;
+	bool localHost = host == L"localhost" || host == L"127.0.0.1" || host == L"::1";
+	if (!useHttps && !localHost)
+		return response;
+	std::wstring requestPath = urlComponents.dwUrlPathLength > 0
+		? std::wstring(urlComponents.lpszUrlPath, urlComponents.dwUrlPathLength)
+		: L"";
+	while (!requestPath.empty() && requestPath.back() == L'/')
+		requestPath.pop_back();
+	requestPath += utf8ToWide(path);
+
+	HINTERNET session = WinHttpOpen(L"BhopSurf/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+		WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+	if (session == nullptr)
+		return response;
+	WinHttpSetTimeouts(session, 5000, 5000, 5000, 10000);
+	HINTERNET connection = WinHttpConnect(session, host.c_str(), urlComponents.nPort, 0);
+	std::wstring wideMethod = utf8ToWide(method);
+	HINTERNET request = connection != nullptr
+		? WinHttpOpenRequest(connection, wideMethod.c_str(), requestPath.c_str(), nullptr,
+			WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, useHttps ? WINHTTP_FLAG_SECURE : 0)
+		: nullptr;
+	if (request == nullptr)
+	{
+		if (connection != nullptr) WinHttpCloseHandle(connection);
+		WinHttpCloseHandle(session);
+		return response;
+	}
+
+	std::wstring headers = L"Content-Type: application/json\r\n";
+	if (!bearerToken.empty())
+		headers += L"Authorization: Bearer " + utf8ToWide(bearerToken) + L"\r\n";
+	BOOL sent = WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(headers.size()),
+		body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char*>(body.data()),
+		static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0);
+	response.received = sent && WinHttpReceiveResponse(request, nullptr);
+	DWORD statusCodeSize = sizeof(response.statusCode);
+	if (response.received)
+		WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+			WINHTTP_HEADER_NAME_BY_INDEX, &response.statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX);
+	if (response.received)
+	{
+		DWORD available = 0;
+		while (WinHttpQueryDataAvailable(request, &available) && available > 0 && response.body.size() < 1024 * 1024)
+		{
+			std::vector<char> buffer(std::min<DWORD>(available, 16384));
+			DWORD bytesRead = 0;
+			if (!WinHttpReadData(request, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead) || bytesRead == 0)
+				break;
+			response.body.append(buffer.data(), bytesRead);
+		}
+	}
+	WinHttpCloseHandle(request);
+	WinHttpCloseHandle(connection);
+	WinHttpCloseHandle(session);
+	return response;
+}
+
+std::string getJsonStringValue(const std::string& json, const std::string& key)
+{
+	std::string marker = "\"" + key + "\":\"";
+	std::size_t valueStart = json.find(marker);
+	if (valueStart == std::string::npos)
+		return {};
+	valueStart += marker.size();
+	std::size_t valueEnd = json.find('"', valueStart);
+	return valueEnd == std::string::npos ? std::string() : json.substr(valueStart, valueEnd - valueStart);
+}
+
+bool getJsonIntValue(const std::string& json, const std::string& key, int& value)
+{
+	std::string marker = "\"" + key + "\":";
+	std::size_t valueStart = json.find(marker);
+	if (valueStart == std::string::npos)
+		return false;
+	valueStart += marker.size();
+	try
+	{
+		std::size_t parsedLength = 0;
+		int parsedValue = std::stoi(json.substr(valueStart), &parsedLength);
+		if (parsedLength == 0 || parsedValue < 0)
+			return false;
+		value = parsedValue;
+		return true;
+	}
+	catch (const std::exception&)
+	{
+		return false;
+	}
+}
+
+bool sendRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore)
+{
+	std::string body = "{\"aimBestScore\":" + std::to_string(aimBestScore) +
+		",\"twoBallsBestScore\":" + std::to_string(twoBallsBestScore) +
+		",\"sixBallsBestScore\":" + std::to_string(sixBallsBestScore) + "}";
+	ApiResponse response = sendApiRequest("PUT", "/api/ranks", body, sessionToken);
+	return response.received && response.statusCode == 200 &&
+		getJsonIntValue(response.body, "aimBestScore", aimBestScore) &&
+		getJsonIntValue(response.body, "twoBallsBestScore", twoBallsBestScore) &&
+		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore);
+}
+
+std::string escapeJsonString(const std::string& value)
+{
+	std::string escaped;
+	escaped.reserve(value.size());
+	for (unsigned char character : value)
+	{
+		if (character == '"' || character == '\\')
+		{
+			escaped.push_back('\\');
+			escaped.push_back(static_cast<char>(character));
+		}
+		else if (character >= 0x20)
+			escaped.push_back(static_cast<char>(character));
+	}
+	return escaped;
+}
+
+SignUpResult sendAuthApiRequest(const std::string& email, const std::string& password, bool signIn, bool resendConfirmation = false)
+{
+	SignUpResult result;
+	if (!isAuthApiConfigured())
+	{
+		result.message = "SET API URL";
+		return result;
+	}
+	std::string body = "{\"email\":\"" + escapeJsonString(email) + "\"";
+	if (!resendConfirmation)
+		body += ",\"password\":\"" + escapeJsonString(password) + "\"";
+	body += "}";
+	std::string requestPath = resendConfirmation ? "/api/auth/resend-confirmation" :
+		(signIn ? "/api/auth/login" : "/api/auth/register");
+	ApiResponse response = sendApiRequest("POST", requestPath, body);
+	if (!response.received)
+	{
+		std::string_view baseUrl = auth_api_config::baseUrl;
+		result.message = baseUrl.starts_with("http://localhost") || baseUrl.starts_with("http://127.0.0.1")
+			? "START LOCAL API" : "NETWORK ERROR";
+		return result;
+	}
+	constexpr const char* confirmationSuccessMessage = "EMAIL SENT CHECK INBOX";
+	if (response.statusCode >= 200 && response.statusCode < 300)
+	{
+		if (response.statusCode == 202)
+		{
+			result.confirmationPending = true;
+			result.message = resendConfirmation ? "CHECK EMAIL IF UNCONFIRMED" : confirmationSuccessMessage;
+		}
+		else
+		{
+			result.authenticated = true;
+			result.sessionToken = getJsonStringValue(response.body, "sessionToken");
+			if (signIn && result.sessionToken.empty())
+			{
+				result.authenticated = false;
+				result.message = "LOGIN RESPONSE ERROR";
+			}
+		}
+		return result;
+	}
+	if (response.statusCode == 409)
+		result.message = "EMAIL ALREADY USED";
+	else if (response.statusCode == 400 || response.statusCode == 422)
+		result.message = "CHECK EMAIL AND PASSWORD";
+	else if (response.statusCode == 401)
+		result.message = "INVALID LOGIN";
+	else if (response.statusCode == 403)
+		result.message = "EMAIL NOT CONFIRMED";
+	else if (response.statusCode == 503 && !signIn)
+	{
+		result.confirmationPending = true;
+		result.message = "EMAIL SEND FAILED";
+	}
+	else if (response.statusCode == 429)
+		result.message = "RATE LIMIT 429";
+	else if (response.statusCode >= 500)
+		result.message = "SERVER ERROR";
+	else
+		result.message = "HTTP " + std::to_string(response.statusCode);
+	return result;
+}
+
+std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int height, float cellSize, float topOffset = 16.0f, float leftOffset = 16.0f, float characterAdvance = 4.0f)
 {
 	std::vector<GLfloat> vertices;
 	if (width <= 0 || height <= 0)
 		return vertices;
 
-	for (std::size_t characterIndex = 0; characterIndex < text.size(); ++characterIndex)
+	static std::unordered_map<std::string, std::vector<glm::vec2>> renderedTextCache;
+	int fontHeight = std::max(1, static_cast<int>(std::lround(cellSize * 6.0f)));
+	int textWidth = std::max(1, static_cast<int>(std::ceil(((text.empty() ? 0.0f :
+		(static_cast<float>(text.size() - 1) * characterAdvance + 3.0f) * cellSize) + cellSize))));
+	std::string cacheKey = text + '\0' + std::to_string(fontHeight) + ':' + std::to_string(textWidth) + ':' + std::to_string(characterAdvance);
+	auto cachedText = renderedTextCache.find(cacheKey);
+	if (cachedText == renderedTextCache.end())
 	{
-		auto glyph = getFpsGlyph(text[characterIndex]);
-		for (int row = 0; row < 5; ++row)
+		std::vector<glm::vec2> pixels;
+		if (!text.empty())
 		{
-			for (int column = 0; column < 3; ++column)
+			BITMAPINFO bitmapInfo{};
+			bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+			bitmapInfo.bmiHeader.biWidth = textWidth;
+			bitmapInfo.bmiHeader.biHeight = -fontHeight;
+			bitmapInfo.bmiHeader.biPlanes = 1;
+			bitmapInfo.bmiHeader.biBitCount = 32;
+			bitmapInfo.bmiHeader.biCompression = BI_RGB;
+			void* bitmapPixels = nullptr;
+			HDC deviceContext = CreateCompatibleDC(nullptr);
+			HBITMAP bitmap = deviceContext ? CreateDIBSection(deviceContext, &bitmapInfo, DIB_RGB_COLORS, &bitmapPixels, nullptr, 0) : nullptr;
+			HFONT font = CreateFontW(-fontHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+				OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+			if (deviceContext && bitmap && bitmapPixels && font)
 			{
-				if (glyph[row][column] != '1')
-					continue;
-
-				float pixelX = leftOffset + (static_cast<float>(characterIndex) * 4.0f + column + 0.5f) * cellSize;
-				float pixelY = topOffset + (row + 0.5f) * cellSize;
-				vertices.push_back(2.0f * pixelX / static_cast<float>(width) - 1.0f);
-				vertices.push_back(1.0f - 2.0f * pixelY / static_cast<float>(height));
+				std::memset(bitmapPixels, 0, static_cast<std::size_t>(textWidth) * fontHeight * 4);
+				HGDIOBJ previousBitmap = SelectObject(deviceContext, bitmap);
+				HGDIOBJ previousFont = SelectObject(deviceContext, font);
+				SetBkMode(deviceContext, TRANSPARENT);
+				SetTextColor(deviceContext, RGB(255, 255, 255));
+				SIZE naturalTextSize{};
+				GetTextExtentPoint32A(deviceContext, text.data(), static_cast<int>(text.size()), &naturalTextSize);
+				int targetAdvance = static_cast<int>(std::lround(characterAdvance * cellSize));
+				int characterExtra = text.size() > 1
+					? (targetAdvance * static_cast<int>(text.size() - 1) + static_cast<int>(std::lround(3.0f * cellSize)) - naturalTextSize.cx) / static_cast<int>(text.size() - 1)
+					: 0;
+				SetTextCharacterExtra(deviceContext, characterExtra);
+				TextOutA(deviceContext, 0, 0, text.data(), static_cast<int>(text.size()));
+				const auto* rgba = static_cast<const std::uint8_t*>(bitmapPixels);
+				for (int y = 0; y < fontHeight; ++y)
+				{
+					for (int x = 0; x < textWidth; ++x)
+					{
+						std::size_t pixelOffset = (static_cast<std::size_t>(y) * textWidth + x) * 4;
+						if (rgba[pixelOffset] > 48 || rgba[pixelOffset + 1] > 48 || rgba[pixelOffset + 2] > 48)
+							pixels.emplace_back(static_cast<float>(x), static_cast<float>(y));
+					}
+				}
+				SelectObject(deviceContext, previousFont);
+				SelectObject(deviceContext, previousBitmap);
 			}
+			if (font)
+				DeleteObject(font);
+			if (bitmap)
+				DeleteObject(bitmap);
+			if (deviceContext)
+				DeleteDC(deviceContext);
 		}
+		cachedText = renderedTextCache.emplace(std::move(cacheKey), std::move(pixels)).first;
+	}
+	for (const glm::vec2& pixel : cachedText->second)
+	{
+		float pixelX = leftOffset + pixel.x;
+		float pixelY = topOffset + pixel.y;
+		vertices.push_back(2.0f * pixelX / static_cast<float>(width) - 1.0f);
+		vertices.push_back(1.0f - 2.0f * pixelY / static_cast<float>(height));
 	}
 	return vertices;
 }
@@ -362,8 +911,18 @@ int main()
 		glfwTerminate();
 		return -1;
 	}
+	HICON windowIcon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(501), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE));
+	if (windowIcon != nullptr)
+	{
+		HWND nativeWindow = glfwGetWin32Window(window);
+		SendMessageW(nativeWindow, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(windowIcon));
+		SendMessageW(nativeWindow, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(windowIcon));
+	}
 	glfwMakeContextCurrent(window);
 	glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+	glfwSetCharCallback(window, signUpCharCallback);
+	glfwSetKeyCallback(window, signUpKeyCallback);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 	glfwSwapInterval(0);
 
 	gladLoadGL();
@@ -678,6 +1237,10 @@ void main()
 	Camera camera(framebufferWidth, framebufferHeight, glm::vec3(0.0f, 2.5f, 6.0f));
 	const fs::path mouseSensitivityPath = getMouseSensitivityPath();
 	camera.sensitivity = loadMouseSensitivity(mouseSensitivityPath);
+	const fs::path audioVolumePath = getAudioVolumePath();
+	float audioVolume = loadAudioVolume(audioVolumePath);
+	const fs::path aimTargetSizePath = getAimTargetSizePath();
+	float aimTargetSize = loadAimTargetSize(aimTargetSizePath);
 	glfwSetWindowUserPointer(window, &camera);
 
 	fs::path modelPath = assetRoot / "Resources" / "models" / "plane" / "plane.gltf";
@@ -769,10 +1332,107 @@ void main()
 		glm::vec3(0.0f, ballGroundY + 5.0f, -26.0f),
 		glm::vec3(4.0f, ballGroundY + 3.0f, -26.0f)
 	};
+	std::array<glm::vec3, 2> twoBallTargets =
+	{
+		glm::vec3(-4.0f, ballGroundY + 2.5f, -26.0f),
+		glm::vec3(4.0f, ballGroundY + 6.0f, -26.0f)
+	};
+	std::array<glm::vec3, 6> sixBallTargets =
+	{
+		glm::vec3(-5.0f, ballGroundY + 2.0f, -26.0f),
+		glm::vec3(0.0f, ballGroundY + 2.0f, -26.0f),
+		glm::vec3(5.0f, ballGroundY + 2.0f, -26.0f),
+		glm::vec3(-5.0f, ballGroundY + 6.0f, -26.0f),
+		glm::vec3(0.0f, ballGroundY + 6.0f, -26.0f),
+		glm::vec3(5.0f, ballGroundY + 6.0f, -26.0f)
+	};
+	std::array<bool, 6> sixBallTargetVisible = { true, true, true, true, true, true };
+	constexpr float sixBallTargetSizeMultiplier = 0.55f;
+	std::array<float, 2> twoBallTargetDirections = { 1.0f, -1.0f };
+	constexpr float twoBallTargetMinX = -5.0f;
+	constexpr float twoBallTargetMaxX = 5.0f;
+	constexpr float twoBallTargetSpeed = 4.0f;
 	std::mt19937 aimTargetRandomEngine(std::random_device{}());
+	std::uniform_real_distribution<float> twoBallTargetSpawnX(twoBallTargetMinX, twoBallTargetMaxX);
+	for (std::size_t targetIndex = 0; targetIndex < twoBallTargets.size(); ++targetIndex)
+	{
+		glm::vec3& target = twoBallTargets[targetIndex];
+		target.x = twoBallTargetSpawnX(aimTargetRandomEngine);
+		twoBallTargetDirections[targetIndex] = target.x < (twoBallTargetMinX + twoBallTargetMaxX) * 0.5f ? 1.0f : -1.0f;
+	}
 	std::uniform_real_distribution<float> aimTargetX(aimTrainerMinX, aimTrainerMaxX);
 	std::uniform_real_distribution<float> aimTargetY(ballGroundY + 2.0f, ballGroundY + 8.0f);
 	std::uniform_real_distribution<float> aimTargetZ(-30.0f, -23.0f);
+	std::uniform_real_distribution<float> sixBallTargetX(-6.0f, 6.0f);
+	std::uniform_real_distribution<float> sixBallTargetY(ballGroundY + 2.0f, ballGroundY + 8.0f);
+	std::uniform_real_distribution<float> sixBallTargetZ(-29.0f, -23.0f);
+	auto randomizeSixBallTargets = [&]()
+	{
+		for (std::size_t targetIndex = 0; targetIndex < sixBallTargets.size(); ++targetIndex)
+		{
+			sixBallTargetVisible[targetIndex] = true;
+			bool placed = false;
+			for (int attempt = 0; attempt < 100; ++attempt)
+			{
+				glm::vec3 candidate(sixBallTargetX(aimTargetRandomEngine),
+					sixBallTargetY(aimTargetRandomEngine), sixBallTargetZ(aimTargetRandomEngine));
+				bool overlapsAnotherTarget = false;
+				for (std::size_t otherIndex = 0; otherIndex < sixBallTargets.size(); ++otherIndex)
+				{
+					if (otherIndex != targetIndex && sixBallTargetVisible[otherIndex] &&
+						glm::length(candidate - sixBallTargets[otherIndex]) < 2.5f)
+					{
+						overlapsAnotherTarget = true;
+						break;
+					}
+				}
+				if (!overlapsAnotherTarget)
+				{
+					sixBallTargets[targetIndex] = candidate;
+					placed = true;
+					break;
+				}
+			}
+				if (!placed)
+				{
+					sixBallTargets[targetIndex] = glm::vec3(sixBallTargetX(aimTargetRandomEngine),
+						sixBallTargetY(aimTargetRandomEngine), sixBallTargetZ(aimTargetRandomEngine));
+				}
+		}
+	};
+	auto respawnSixBallTarget = [&](std::size_t targetIndex)
+	{
+		glm::vec3 previousPosition = sixBallTargets[targetIndex];
+		sixBallTargetVisible[targetIndex] = false;
+		for (int attempt = 0; attempt < 100; ++attempt)
+		{
+			glm::vec3 candidate(sixBallTargetX(aimTargetRandomEngine),
+				sixBallTargetY(aimTargetRandomEngine), sixBallTargetZ(aimTargetRandomEngine));
+			if (glm::length(candidate - previousPosition) < 2.5f)
+				continue;
+
+			bool overlapsAnotherTarget = false;
+			for (std::size_t otherIndex = 0; otherIndex < sixBallTargets.size(); ++otherIndex)
+			{
+				if (otherIndex != targetIndex && sixBallTargetVisible[otherIndex] &&
+					glm::length(candidate - sixBallTargets[otherIndex]) < 2.5f)
+				{
+					overlapsAnotherTarget = true;
+					break;
+				}
+			}
+			if (!overlapsAnotherTarget)
+			{
+				sixBallTargets[targetIndex] = candidate;
+				sixBallTargetVisible[targetIndex] = true;
+				return;
+			}
+		}
+		sixBallTargets[targetIndex] = glm::vec3(sixBallTargetX(aimTargetRandomEngine),
+			sixBallTargetY(aimTargetRandomEngine), sixBallTargetZ(aimTargetRandomEngine));
+		sixBallTargetVisible[targetIndex] = true;
+	};
+	randomizeSixBallTargets();
 	auto respawnAimTarget = [&](std::size_t targetIndex)
 	{
 		glm::vec3 previousPosition = aimTargets[targetIndex];
@@ -800,11 +1460,27 @@ void main()
 
 		aimTargets[targetIndex] = glm::vec3(aimTargetX(aimTargetRandomEngine), aimTargetY(aimTargetRandomEngine), aimTargetZ(aimTargetRandomEngine));
 	};
+	auto respawnTwoBallTarget = [&](std::size_t targetIndex)
+	{
+		glm::vec3& target = twoBallTargets[targetIndex];
+		target.x = twoBallTargetSpawnX(aimTargetRandomEngine);
+		target.y = ballGroundY + (targetIndex == 0 ? 2.5f : 6.0f);
+		target.z = -26.0f;
+		twoBallTargetDirections[targetIndex] = target.x < (twoBallTargetMinX + twoBallTargetMaxX) * 0.5f ? 1.0f : -1.0f;
+	};
 	constexpr double aimTaskDurationSeconds = 30.0;
 	const fs::path aimHighScorePath = getAimHighScorePath();
+	const fs::path twoBallsHighScorePath = getTwoBallsHighScorePath();
+	const fs::path sixBallsHighScorePath = getSixBallsHighScorePath();
 	constexpr double aimTaskRetryCooldownSeconds = 1.0;
 	int aimTaskScore = 0;
 	int aimHighScore = loadAimHighScore(aimHighScorePath);
+	int twoBallsHighScore = loadAimHighScore(twoBallsHighScorePath);
+	int sixBallsHighScore = loadAimHighScore(sixBallsHighScorePath);
+	std::string authenticatedSessionToken;
+	std::vector<std::thread> rankSyncThreads;
+	bool twoBallsScenario = false;
+	bool sixBallsScenario = false;
 	struct AimRank
 	{
 		const char* name;
@@ -827,10 +1503,12 @@ void main()
 	}};
 	auto getCurrentAimRank = [&]() -> const AimRank&
 	{
+		int scenarioHighScore = sixBallsScenario ? sixBallsHighScore :
+			(twoBallsScenario ? twoBallsHighScore : aimHighScore);
 		const AimRank* rank = &aimRanks.front();
 		for (const AimRank& candidate : aimRanks)
 		{
-			if (aimHighScore < candidate.minimumScore)
+			if (scenarioHighScore < candidate.minimumScore)
 				break;
 			rank = &candidate;
 		}
@@ -839,6 +1517,13 @@ void main()
 	bool aimTaskRunning = false;
 	bool aimTaskFinished = false;
 	bool wasAimTrainerActive = false;
+	bool mustCompleteScenarioBeforeLeaving = false;
+	bool completedThreeBallsOnce = false;
+	bool completedTwoBallsOnce = false;
+	bool completedSixBallsOnce = false;
+	bool previousThreeBallsKey = false;
+	bool previousTwoBallsKey = false;
+	bool previousSixBallsKey = false;
 	double aimTaskStartTime = 0.0;
 	double aimTaskFinishedTime = 0.0;
 	glm::mat4 playerBallRotation(1.0f);
@@ -881,13 +1566,17 @@ void main()
 	bool previousX = false;
 	bool previousZ = false;
 	bool previousLeftMouse = false;
-	bool gamePaused = false;
+	bool gamePaused = true;
+	if (!isAuthApiConfigured())
+		signUpForm.status = "SET API URL";
 	bool showingControls = false;
 	bool showingRanks = false;
 	bool showingScenarioRanks = false;
 	bool previousEscape = false;
 	bool previousPauseMouse = false;
 	bool draggingSensitivity = false;
+	bool draggingAudioVolume = false;
+	bool draggingAimTargetSize = false;
 	double pauseStartedAt = 0.0;
 	float cameraVerticalVelocity = 0.0f;
 	float jumpBufferRemaining = 0.0f;
@@ -987,6 +1676,10 @@ void main()
 	glm::vec3 previousCameraPosition = camera.Position;
 	std::vector<std::uint8_t> jumpSound = makeConcreteJumpWav();
 	std::vector<std::uint8_t> aimTargetHitSound = makeAimTargetHitWav();
+	std::vector<std::uint8_t> adjustedJumpSound;
+	std::vector<std::uint8_t> adjustedAimTargetHitSound;
+	setWavVolume(jumpSound, adjustedJumpSound, audioVolume);
+	setWavVolume(aimTargetHitSound, adjustedAimTargetHitSound, audioVolume);
 	float fpsCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
 	std::string fpsLabel = "FPS: 0";
 	std::vector<GLfloat> fpsVertices = buildFpsVertices(fpsLabel, framebufferWidth, framebufferHeight, fpsCellSize);
@@ -1010,16 +1703,76 @@ void main()
 	while (!glfwWindowShouldClose(window))
 	{
 		processInput(window);
+		SignUpResult completedSignUpResult;
+		bool hasCompletedSignUpRequest = false;
+		{
+			std::lock_guard<std::mutex> resultLock(signUpResultMutex);
+			if (signUpResultReady)
+			{
+				completedSignUpResult = signUpResult;
+				signUpResultReady = false;
+				hasCompletedSignUpRequest = true;
+			}
+		}
+		if (hasCompletedSignUpRequest)
+		{
+			if (signUpAuthThread.joinable())
+				signUpAuthThread.join();
+			signUpForm.submitting = false;
+			signUpForm.status = completedSignUpResult.message;
+			if (completedSignUpResult.confirmationPending)
+				signUpForm.emailConfirmationPending = true;
+			if (completedSignUpResult.message == "EMAIL NOT CONFIRMED")
+				signUpForm.emailConfirmationPending = true;
+			if (completedSignUpResult.authenticated)
+			{
+				authenticatedSessionToken = completedSignUpResult.sessionToken;
+				if (completedSignUpResult.ranksSynchronized)
+				{
+					if (completedSignUpResult.aimBestScore > aimHighScore)
+					{
+						aimHighScore = completedSignUpResult.aimBestScore;
+						saveAimHighScore(aimHighScorePath, aimHighScore);
+					}
+					if (completedSignUpResult.twoBallsBestScore > twoBallsHighScore)
+					{
+						twoBallsHighScore = completedSignUpResult.twoBallsBestScore;
+						saveAimHighScore(twoBallsHighScorePath, twoBallsHighScore);
+					}
+					if (completedSignUpResult.sixBallsBestScore > sixBallsHighScore)
+					{
+						sixBallsHighScore = completedSignUpResult.sixBallsBestScore;
+						saveAimHighScore(sixBallsHighScorePath, sixBallsHighScore);
+					}
+				}
+				signUpForm.active = false;
+				signUpForm.complete = true;
+				signUpForm.password.clear();
+				signUpForm.confirmPassword.clear();
+				gamePaused = false;
+				camera.mouseInitialized = false;
+				glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+			}
+			else if (completedSignUpResult.message == "EMAIL ALREADY USED")
+			{
+				signUpForm.signInMode = true;
+				signUpForm.focusedField = SignUpField::Email;
+				signUpForm.password.clear();
+				signUpForm.confirmPassword.clear();
+			}
+		}
 
 		double currentTime = glfwGetTime();
 		bool escapePressed = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
 		bool pauseStateChanged = false;
 		bool rankMenuPage = gamePaused && (showingRanks || showingScenarioRanks);
-		if (escapePressed && !previousEscape)
+		bool controlsMenuPage = gamePaused && showingControls;
+		if (escapePressed && !previousEscape && !signUpForm.active)
 		{
 			pauseStateChanged = true;
-			if (rankMenuPage)
+			if (rankMenuPage || controlsMenuPage)
 			{
+				showingControls = false;
 				showingRanks = false;
 				showingScenarioRanks = false;
 			}
@@ -1047,8 +1800,10 @@ void main()
 		}
 		previousEscape = escapePressed;
 		rankMenuPage = gamePaused && (showingRanks || showingScenarioRanks);
+		controlsMenuPage = gamePaused && showingControls;
 		bool pauseMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-			if (gamePaused && showingControls && !rankMenuPage && pauseMousePressed && !previousPauseMouse)
+		if (controlsMenuPage && !draggingSensitivity && !draggingAudioVolume && !draggingAimTargetSize &&
+			pauseMousePressed && !previousPauseMouse)
 		{
 			int sliderFramebufferWidth = 0;
 			int sliderFramebufferHeight = 0;
@@ -1061,20 +1816,37 @@ void main()
 			glfwGetCursorPos(window, &cursorX, &cursorY);
 			if (sliderWindowWidth > 0 && sliderWindowHeight > 0 && sliderFramebufferWidth > 0 && sliderFramebufferHeight > 0)
 			{
-				float clickX = static_cast<float>(cursorX * sliderFramebufferWidth / sliderWindowWidth);
+				float clickX = static_cast<float>(
+					cursorX * static_cast<double>(sliderFramebufferWidth) / static_cast<double>(sliderWindowWidth));
 				float clickY = static_cast<float>(cursorY * sliderFramebufferHeight / sliderWindowHeight);
 				float cellSize = std::max(2.0f, static_cast<float>(sliderFramebufferHeight) / 300.0f);
 				float sliderLeft = static_cast<float>(sliderFramebufferWidth) * 0.5f - 55.0f * cellSize;
 				float sliderRight = static_cast<float>(sliderFramebufferWidth) * 0.5f + 55.0f * cellSize;
-				float sliderY = static_cast<float>(sliderFramebufferHeight) * 0.30f + 106.0f * cellSize;
+				float sensitivityLabelTop = static_cast<float>(sliderFramebufferHeight) * 0.60f;
+				float sensitivitySliderY = sensitivityLabelTop + 7.0f * cellSize;
+				float volumeLabelTop = sensitivityLabelTop + 14.0f * cellSize;
+				float volumeSliderY = volumeLabelTop + 7.0f * cellSize;
+				float targetSizeLabelTop = sensitivityLabelTop + 25.0f * cellSize;
+				float targetSizeSliderY = targetSizeLabelTop + 7.0f * cellSize;
 				if (clickX >= sliderLeft - 8.0f * cellSize && clickX <= sliderRight + 8.0f * cellSize &&
-					clickY >= sliderY - 5.0f * cellSize && clickY <= sliderY + 5.0f * cellSize)
+					clickY >= sensitivitySliderY - 5.0f * cellSize && clickY <= sensitivitySliderY + 5.0f * cellSize)
 					draggingSensitivity = true;
+				else if (clickX >= sliderLeft - 8.0f * cellSize && clickX <= sliderRight + 8.0f * cellSize &&
+					clickY >= volumeSliderY - 5.0f * cellSize && clickY <= volumeSliderY + 5.0f * cellSize)
+					draggingAudioVolume = true;
+				else if (clickX >= sliderLeft - 8.0f * cellSize && clickX <= sliderRight + 8.0f * cellSize &&
+					clickY >= targetSizeSliderY - 5.0f * cellSize && clickY <= targetSizeSliderY + 5.0f * cellSize)
+					draggingAimTargetSize = true;
 			}
 		}
 		if (!pauseMousePressed)
+		{
 			draggingSensitivity = false;
-			if (gamePaused && showingControls && !rankMenuPage && draggingSensitivity && pauseMousePressed)
+			draggingAudioVolume = false;
+			draggingAimTargetSize = false;
+		}
+		if (controlsMenuPage &&
+			(draggingSensitivity || draggingAudioVolume || draggingAimTargetSize) && pauseMousePressed)
 		{
 			int sliderFramebufferWidth = 0;
 			int sliderFramebufferHeight = 0;
@@ -1087,14 +1859,34 @@ void main()
 			glfwGetCursorPos(window, &cursorX, &cursorY);
 			if (sliderWindowWidth > 0 && sliderFramebufferWidth > 0 && sliderFramebufferHeight > 0)
 			{
-				float clickX = static_cast<float>(cursorX * sliderFramebufferWidth / sliderWindowWidth);
+				float clickX = static_cast<float>(
+					cursorX * static_cast<double>(sliderFramebufferWidth) / static_cast<double>(sliderWindowWidth));
 				float cellSize = std::max(2.0f, static_cast<float>(sliderFramebufferHeight) / 300.0f);
 				float sliderLeft = static_cast<float>(sliderFramebufferWidth) * 0.5f - 55.0f * cellSize;
 				float sliderWidth = 110.0f * cellSize;
-				float amount = glm::clamp((clickX - sliderLeft) / sliderWidth, 0.0f, 1.0f);
-				camera.sensitivity = 0.02f + amount * 0.28f;
-				saveMouseSensitivity(mouseSensitivityPath, camera.sensitivity);
-				pauseStateChanged = true;
+				if (draggingSensitivity)
+				{
+					float amount = glm::clamp((clickX - sliderLeft) / sliderWidth, 0.0f, 1.0f);
+					camera.sensitivity = 0.02f + amount * 0.28f;
+					saveMouseSensitivity(mouseSensitivityPath, camera.sensitivity);
+					pauseStateChanged = true;
+				}
+				if (draggingAimTargetSize)
+				{
+					float amount = glm::clamp((clickX - sliderLeft) / sliderWidth, 0.0f, 1.0f);
+					aimTargetSize = 0.25f + amount * 0.75f;
+					saveAimTargetSize(aimTargetSizePath, aimTargetSize);
+					pauseStateChanged = true;
+				}
+				if (draggingAudioVolume)
+				{
+					float amount = glm::clamp((clickX - sliderLeft) / sliderWidth, 0.0f, 1.0f);
+					audioVolume = amount;
+					saveAudioVolume(audioVolumePath, audioVolume);
+					setWavVolume(jumpSound, adjustedJumpSound, audioVolume);
+					setWavVolume(aimTargetHitSound, adjustedAimTargetHitSound, audioVolume);
+					pauseStateChanged = true;
+				}
 			}
 		}
 		if (gamePaused && pauseMousePressed && !previousPauseMouse)
@@ -1113,12 +1905,62 @@ void main()
 				float clickX = static_cast<float>(cursorX * clickFramebufferWidth / clickWindowWidth);
 				float clickY = static_cast<float>(cursorY * clickFramebufferHeight / clickWindowHeight);
 				float menuCellSize = std::max(2.0f, static_cast<float>(clickFramebufferHeight) / 300.0f);
-				bool clickedRankMenuPage = showingRanks || showingScenarioRanks;
-				if (clickedRankMenuPage)
+				if (signUpForm.active)
+				{
+					if (!signUpForm.submitting)
+					{
+					float emailLabelTop = static_cast<float>(clickFramebufferHeight) * 0.28f;
+					float passwordLabelTop = static_cast<float>(clickFramebufferHeight) * 0.40f;
+					float confirmLabelTop = static_cast<float>(clickFramebufferHeight) * 0.52f;
+					float formCenterX = static_cast<float>(clickFramebufferWidth) * 0.5f;
+					if (clickX >= formCenterX - 100.0f * menuCellSize && clickX <= formCenterX + 100.0f * menuCellSize)
+					{
+						if (clickY >= emailLabelTop + 3.0f * menuCellSize && clickY <= emailLabelTop + 12.0f * menuCellSize)
+							signUpForm.focusedField = SignUpField::Email;
+						else if (clickY >= passwordLabelTop + 3.0f * menuCellSize && clickY <= passwordLabelTop + 12.0f * menuCellSize)
+							signUpForm.focusedField = SignUpField::Password;
+						else if (!signUpForm.signInMode && clickY >= confirmLabelTop + 3.0f * menuCellSize && clickY <= confirmLabelTop + 12.0f * menuCellSize)
+							signUpForm.focusedField = SignUpField::ConfirmPassword;
+						else if (clickX >= formCenterX - 40.0f * menuCellSize && clickX <= formCenterX + 40.0f * menuCellSize &&
+							clickY >= passwordLabelTop + 13.0f * menuCellSize && clickY <= passwordLabelTop + 20.0f * menuCellSize)
+							signUpForm.showPassword = !signUpForm.showPassword;
+						else if (signUpForm.emailConfirmationPending &&
+							clickX >= formCenterX - 90.0f * menuCellSize && clickX <= formCenterX + 90.0f * menuCellSize &&
+							clickY >= static_cast<float>(clickFramebufferHeight) * 0.83f - 5.0f * menuCellSize &&
+							clickY <= static_cast<float>(clickFramebufferHeight) * 0.83f + 12.0f * menuCellSize)
+							signUpForm.resendRequested = true;
+						else if (clickX >= formCenterX - 40.0f * menuCellSize && clickX <= formCenterX + 40.0f * menuCellSize &&
+							clickY >= static_cast<float>(clickFramebufferHeight) * 0.67f - 5.0f * menuCellSize &&
+							clickY <= static_cast<float>(clickFramebufferHeight) * 0.67f + 12.0f * menuCellSize)
+							signUpForm.submitRequested = true;
+						else if (clickX >= formCenterX - 75.0f * menuCellSize && clickX <= formCenterX + 75.0f * menuCellSize &&
+							clickY >= static_cast<float>(clickFramebufferHeight) * 0.75f - 5.0f * menuCellSize &&
+							clickY <= static_cast<float>(clickFramebufferHeight) * 0.75f + 12.0f * menuCellSize)
+						{
+							signUpForm.signInMode = !signUpForm.signInMode;
+							if (signUpForm.signInMode && signUpForm.focusedField == SignUpField::ConfirmPassword)
+								signUpForm.focusedField = SignUpField::Email;
+						}
+					}
+					}
+				}
+				else if (controlsMenuPage)
 				{
 					float backTop = static_cast<float>(clickFramebufferHeight) - 48.0f * menuCellSize;
-					if (clickX >= static_cast<float>(clickFramebufferWidth) * 0.5f - 22.0f * menuCellSize &&
-						clickX <= static_cast<float>(clickFramebufferWidth) * 0.5f + 22.0f * menuCellSize &&
+					float backCenterX = static_cast<float>(clickFramebufferWidth) * 0.5f;
+					if (clickX >= backCenterX - 20.0f * menuCellSize && clickX <= backCenterX + 20.0f * menuCellSize &&
+						clickY >= backTop - 5.0f * menuCellSize && clickY <= backTop + 12.0f * menuCellSize)
+					{
+						showingControls = false;
+						controlsMenuPage = false;
+						pauseStateChanged = true;
+					}
+				}
+				else if (showingRanks || showingScenarioRanks)
+				{
+					float backTop = static_cast<float>(clickFramebufferHeight) - 48.0f * menuCellSize;
+					float backCenterX = static_cast<float>(clickFramebufferWidth) * 0.5f;
+					if (clickX >= backCenterX - 20.0f * menuCellSize && clickX <= backCenterX + 20.0f * menuCellSize &&
 						clickY >= backTop - 5.0f * menuCellSize && clickY <= backTop + 12.0f * menuCellSize)
 					{
 						showingRanks = false;
@@ -1136,19 +1978,19 @@ void main()
 							clickY >= top - 5.0f * menuCellSize && clickY <= top + 12.0f * menuCellSize;
 					};
 					float pauseTop = static_cast<float>(clickFramebufferHeight) * 0.30f;
-				if (buttonHit("RESUME", pauseTop + 10.0f * menuCellSize, 1.5f))
-				{
-					gamePaused = false;
-					showingControls = false;
-					showingRanks = false;
-					showingScenarioRanks = false;
-					camera.mouseInitialized = false;
-					glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-					if (aimTaskRunning)
-						aimTaskStartTime += currentTime - pauseStartedAt;
-					pauseStateChanged = true;
-				}
-				else if (buttonHit("SCENARIO RANKS", pauseTop + 60.0f * menuCellSize, 1.5f))
+					if (buttonHit("RESUME", pauseTop + 10.0f * menuCellSize, 1.5f))
+					{
+						gamePaused = false;
+						showingControls = false;
+						showingRanks = false;
+						showingScenarioRanks = false;
+						camera.mouseInitialized = false;
+						glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+						if (aimTaskRunning)
+							aimTaskStartTime += currentTime - pauseStartedAt;
+						pauseStateChanged = true;
+					}
+					else if (buttonHit("SCENARIO RANKS", pauseTop + 60.0f * menuCellSize, 1.5f))
 					{
 						showingScenarioRanks = true;
 						showingRanks = showingControls = false;
@@ -1173,7 +2015,68 @@ void main()
 				}
 			}
 		}
+		if (signUpForm.active && (signUpForm.submitRequested || signUpForm.resendRequested) && !signUpForm.submitting)
+		{
+			bool resendConfirmation = signUpForm.resendRequested;
+			signUpForm.submitRequested = false;
+			signUpForm.resendRequested = false;
+			if (!isAuthApiConfigured())
+				signUpForm.status = "SET API URL";
+			else if (resendConfirmation && signUpForm.email.empty())
+				signUpForm.status = "ENTER YOUR EMAIL";
+			else
+			{
+				std::size_t atPosition = signUpForm.email.find('@');
+				std::size_t dotPosition = signUpForm.email.find('.', atPosition == std::string::npos ? 0 : atPosition);
+				if (!resendConfirmation && (atPosition == std::string::npos || atPosition == 0 || dotPosition == std::string::npos ||
+					dotPosition <= atPosition + 1 || dotPosition + 1 >= signUpForm.email.size()))
+					signUpForm.status = "INVALID EMAIL";
+				else if (!resendConfirmation && signUpForm.password.size() < 6)
+					signUpForm.status = "PASSWORD TOO SHORT";
+				else if (!resendConfirmation && !signUpForm.signInMode && signUpForm.password != signUpForm.confirmPassword)
+					signUpForm.status = "PASSWORDS DO NOT MATCH";
+				else
+				{
+					std::string email = signUpForm.email;
+					std::string password = signUpForm.password;
+					bool signIn = signUpForm.signInMode;
+					if (resendConfirmation)
+						signIn = false;
+					signUpForm.status.clear();
+					signUpForm.submitting = true;
+					{
+						std::lock_guard<std::mutex> resultLock(signUpResultMutex);
+						signUpResultReady = false;
+					}
+					try
+					{
+						 signUpAuthThread = std::thread([email = std::move(email), password = std::move(password), signIn, resendConfirmation,
+							localAimBest = aimHighScore, localTwoBallsBest = twoBallsHighScore, localSixBallsBest = sixBallsHighScore]()
+						{
+							SignUpResult requestResult = sendAuthApiRequest(email, password, signIn, resendConfirmation);
+							if (requestResult.authenticated && !requestResult.sessionToken.empty())
+							{
+								requestResult.aimBestScore = localAimBest;
+								requestResult.twoBallsBestScore = localTwoBallsBest;
+								requestResult.sixBallsBestScore = localSixBallsBest;
+								requestResult.ranksSynchronized = sendRankScores(requestResult.sessionToken,
+									requestResult.aimBestScore, requestResult.twoBallsBestScore, requestResult.sixBallsBestScore);
+							}
+							std::lock_guard<std::mutex> resultLock(signUpResultMutex);
+							signUpResult = std::move(requestResult);
+							signUpResultReady = true;
+						});
+					}
+					catch (const std::system_error&)
+					{
+						signUpForm.submitting = false;
+						signUpForm.status = "NETWORK ERROR";
+					}
+				}
+			}
+		}
 		rankMenuPage = gamePaused && (showingRanks || showingScenarioRanks);
+		controlsMenuPage = gamePaused && showingControls;
 		previousPauseMouse = pauseMousePressed;
 		double aimTaskClockTime = gamePaused ? pauseStartedAt : currentTime;
 		double elapsedSincePreviousFrame = currentTime - previousTime;
@@ -1208,7 +2111,7 @@ void main()
 			speedLabel = "SPD: " + std::to_string(static_cast<int>(std::round(horizontalSpeed)));
 			glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
 			fpsCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
-			fpsVertices = rankMenuPage
+			fpsVertices = (signUpForm.active || rankMenuPage || controlsMenuPage)
 				? std::vector<GLfloat>()
 				: buildFpsVertices(fpsLabel, framebufferWidth, framebufferHeight, fpsCellSize);
 			speedVertices = buildFpsVertices(speedLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 7.0f * fpsCellSize);
@@ -1219,9 +2122,10 @@ void main()
 				aimTaskSecondsRemaining = static_cast<int>(std::ceil(std::max(0.0, aimTaskDurationSeconds - (aimTaskClockTime - aimTaskStartTime))));
 			aimTaskLabel = "T:" + std::to_string(aimTaskSecondsRemaining) +
 				" H:" + std::to_string(aimTaskScore) +
-				" B:" + std::to_string(aimHighScore);
+			" B:" + std::to_string(sixBallsScenario ? sixBallsHighScore :
+				(twoBallsScenario ? twoBallsHighScore : aimHighScore));
 			aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 14.0f * fpsCellSize);
-			if (!rankMenuPage)
+			if (!signUpForm.active && !rankMenuPage && !controlsMenuPage)
 			{
 				fpsVertices.insert(fpsVertices.end(), speedVertices.begin(), speedVertices.end());
 				fpsVertices.insert(fpsVertices.end(), aimTaskVertices.begin(), aimTaskVertices.end());
@@ -1232,13 +2136,15 @@ void main()
 				rankVertexCount = static_cast<GLsizei>(rankVertices.size() / 2);
 				fpsVertices.insert(fpsVertices.end(), rankVertices.begin(), rankVertices.end());
 			}
+			int scenarioHighScore = sixBallsScenario ? sixBallsHighScore :
+				(twoBallsScenario ? twoBallsHighScore : aimHighScore);
 			int currentRankMinimumScore = getCurrentAimRank().minimumScore;
 			int nextRankMinimumScore = aimRanks.back().minimumScore;
 			if (currentRankMinimumScore < aimRanks.back().minimumScore)
 			{
 				for (const AimRank& rank : aimRanks)
 				{
-					if (rank.minimumScore > aimHighScore)
+					if (rank.minimumScore > scenarioHighScore)
 					{
 						nextRankMinimumScore = rank.minimumScore;
 						break;
@@ -1280,12 +2186,62 @@ void main()
 					rankLadderVertexStarts[rankIndex] = static_cast<GLint>(startVertex);
 					rankLadderVertexCounts[rankIndex] = static_cast<GLsizei>(fpsVertices.size() / 2 - startVertex);
 				}
-				std::string progressText = aimHighScore >= aimRanks.back().minimumScore
+				std::string progressText = scenarioHighScore >= aimRanks.back().minimumScore
 					? "MAX RANK"
-					: "NEXT " + std::to_string(std::max(0, nextRankMinimumScore - aimHighScore));
+					: "NEXT " + std::to_string(std::max(0, nextRankMinimumScore - scenarioHighScore));
 				appendCenteredRankText(progressText, fpsCellSize, static_cast<float>(framebufferHeight) * 0.25f + 12.0f * 4.5f * fpsCellSize);
 			}
-			if (gamePaused && !rankMenuPage)
+			if (signUpForm.active)
+			{
+				auto getVisiblePasswordText = [](const std::string& password)
+				{
+					return password.size() > 34 ? password.substr(password.size() - 34) : password;
+				};
+				auto appendCenteredSignUpText = [&](const std::string& text, float top, float scale = 1.0f, float characterAdvance = 4.0f)
+				{
+					float cellSize = fpsCellSize * scale;
+					float width = text.empty() ? 0.0f : (static_cast<float>(text.size() - 1) * characterAdvance + 3.0f) * cellSize;
+					std::vector<GLfloat> textVertices = buildFpsVertices(text, framebufferWidth, framebufferHeight,
+						cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f, characterAdvance);
+					fpsVertices.insert(fpsVertices.end(), textVertices.begin(), textVertices.end());
+				};
+				float emailTop = static_cast<float>(framebufferHeight) * 0.28f;
+				float passwordTop = static_cast<float>(framebufferHeight) * 0.40f;
+				float confirmTop = static_cast<float>(framebufferHeight) * 0.52f;
+				appendCenteredSignUpText(signUpForm.signInMode ? "SIGN IN" : "CREATE ACCOUNT",
+					static_cast<float>(framebufferHeight) * 0.16f, 1.6f, 4.5f);
+				appendCenteredSignUpText("EMAIL", emailTop);
+				std::string visibleEmail = signUpForm.email.size() > 34 ? signUpForm.email.substr(signUpForm.email.size() - 34) : signUpForm.email;
+				appendCenteredSignUpText((signUpForm.focusedField == SignUpField::Email ? ">" : " ") +
+					(visibleEmail.empty() ? "CLICK TO TYPE" : visibleEmail), emailTop + 6.0f * fpsCellSize);
+				appendCenteredSignUpText("PASSWORD", passwordTop);
+				appendCenteredSignUpText((signUpForm.focusedField == SignUpField::Password ? ">" : " ") +
+					(signUpForm.password.empty() ? "CLICK TO TYPE" : (signUpForm.showPassword ? getVisiblePasswordText(signUpForm.password) : std::string(std::min<std::size_t>(signUpForm.password.size(), 34), '*'))),
+					passwordTop + 6.0f * fpsCellSize);
+				appendCenteredSignUpText(signUpForm.showPassword ? "HIDE PASSWORD" : "SHOW PASSWORD",
+					passwordTop + 14.0f * fpsCellSize);
+				if (!signUpForm.signInMode)
+				{
+					appendCenteredSignUpText("CONFIRM", confirmTop);
+					appendCenteredSignUpText((signUpForm.focusedField == SignUpField::ConfirmPassword ? ">" : " ") +
+						(signUpForm.confirmPassword.empty() ? "CLICK TO TYPE" : (signUpForm.showPassword ? getVisiblePasswordText(signUpForm.confirmPassword) : std::string(std::min<std::size_t>(signUpForm.confirmPassword.size(), 34), '*'))),
+						confirmTop + 6.0f * fpsCellSize);
+				}
+				appendCenteredSignUpText(signUpForm.submitting ? "CONNECTING" : (signUpForm.signInMode ? "SIGN IN" : "REGISTER"),
+					static_cast<float>(framebufferHeight) * 0.67f, 1.4f, 4.5f);
+				appendCenteredSignUpText(signUpForm.signInMode ? "CREATE ACCOUNT" : "SWITCH TO SIGN IN",
+					static_cast<float>(framebufferHeight) * 0.75f);
+				if (signUpForm.emailConfirmationPending)
+				{
+					appendCenteredSignUpText("CLICK TO RESEND EMAIL", static_cast<float>(framebufferHeight) * 0.83f);
+					if (!signUpForm.status.empty())
+						appendCenteredSignUpText(signUpForm.status, static_cast<float>(framebufferHeight) * 0.89f);
+				}
+				else
+					appendCenteredSignUpText(signUpForm.status.empty() ? "TAB SWITCH ENTER SUBMIT" : signUpForm.status,
+						static_cast<float>(framebufferHeight) * 0.83f);
+			}
+			if (gamePaused && !signUpForm.active && !rankMenuPage && !controlsMenuPage)
 			{
 				const std::string pauseLabel = "PAUSED";
 				float pauseCellSize = fpsCellSize * 2.0f;
@@ -1305,33 +2261,87 @@ void main()
 				appendCenteredPauseText("RANKS", fpsCellSize * 1.5f, pauseTop + 40.0f * fpsCellSize);
 				appendCenteredPauseText("SCENARIO RANKS", fpsCellSize * 1.5f, pauseTop + 60.0f * fpsCellSize);
 				appendCenteredPauseText("EXIT", fpsCellSize * 1.5f, pauseTop + 124.0f * fpsCellSize);
-				if (showingControls)
+			}
+			if (controlsMenuPage)
+			{
+				float settingsCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
+				auto appendCenteredSettingsText = [&](const std::string& text, float cellSize, float top)
 				{
-					const std::array<std::string, 7> controlsText = {
-						"WASD MOVE", "MOUSE LOOK", "SPACE JUMP", "LMB SHOOT",
-						"X/Z BALL", "F FULLSCREEN", "ESC RESUME"
-					};
-					float controlsTop = pauseTop + pauseHeight + 23.0f * fpsCellSize;
-					for (std::size_t controlIndex = 0; controlIndex < controlsText.size(); ++controlIndex)
-						appendCenteredPauseText(controlsText[controlIndex], fpsCellSize, controlsTop + static_cast<float>(controlIndex) * 7.0f * fpsCellSize);
-					int sensitivityPercent = static_cast<int>(std::round((camera.sensitivity - 0.02f) / 0.28f * 100.0f));
-					appendCenteredPauseText("SENSITIVITY: " + std::to_string(sensitivityPercent), fpsCellSize,
-						pauseTop + 82.0f * fpsCellSize);
-					float sliderLeft = static_cast<float>(framebufferWidth) * 0.5f - 55.0f * fpsCellSize;
-					float sliderWidth = 110.0f * fpsCellSize;
-					float sliderY = pauseTop + 106.0f * fpsCellSize;
-					for (int tick = 0; tick <= 40; ++tick)
-					{
-						float pixelX = sliderLeft + sliderWidth * static_cast<float>(tick) / 40.0f;
-						fpsVertices.push_back(2.0f * pixelX / static_cast<float>(framebufferWidth) - 1.0f);
-						fpsVertices.push_back(1.0f - 2.0f * sliderY / static_cast<float>(framebufferHeight));
-					}
-					float sliderAmount = glm::clamp((camera.sensitivity - 0.02f) / 0.28f, 0.0f, 1.0f);
-					float knobX = sliderLeft + sliderWidth * sliderAmount;
-					std::vector<GLfloat> knobVertices = buildFpsVertices(
-						"I", framebufferWidth, framebufferHeight, fpsCellSize * 2.0f,
-						sliderY - 5.0f * fpsCellSize, knobX - 3.0f * fpsCellSize);
-					fpsVertices.insert(fpsVertices.end(), knobVertices.begin(), knobVertices.end());
+					float width = static_cast<float>(text.size() * 4 - 1) * cellSize;
+					std::vector<GLfloat> vertices = buildFpsVertices(text, framebufferWidth, framebufferHeight,
+						cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f);
+					fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
+				};
+				float settingsTitleSize = settingsCellSize * 1.5f;
+				appendCenteredSettingsText("CONTROLS", settingsTitleSize, static_cast<float>(framebufferHeight) * 0.10f);
+				appendCenteredSettingsText("BACK", settingsTitleSize, static_cast<float>(framebufferHeight) - 48.0f * settingsCellSize);
+				const std::array<std::string, 7> controlsText = {
+					"WASD MOVE", "MOUSE LOOK", "SPACE JUMP", "LMB SHOOT",
+					"X/Z BALL", "F FULLSCREEN", "ESC RESUME"
+				};
+				float controlRowTop = static_cast<float>(framebufferHeight) * 0.23f;
+				float controlRowSpacing = settingsCellSize * 4.5f;
+				for (std::size_t controlIndex = 0; controlIndex < controlsText.size(); ++controlIndex)
+					appendCenteredSettingsText(controlsText[controlIndex], settingsCellSize,
+						controlRowTop + static_cast<float>(controlIndex) * controlRowSpacing);
+
+				float sliderLeft = static_cast<float>(framebufferWidth) * 0.5f - 55.0f * settingsCellSize;
+				float sliderWidth = 110.0f * settingsCellSize;
+				float sensitivityLabelTop = static_cast<float>(framebufferHeight) * 0.60f;
+				appendCenteredSettingsText("SENSITIVITY: " + std::to_string(static_cast<int>(std::round((camera.sensitivity - 0.02f) / 0.28f * 100.0f))),
+					settingsCellSize, sensitivityLabelTop);
+				float sensitivitySliderY = sensitivityLabelTop + 7.0f * settingsCellSize;
+				float volumeLabelTop = sensitivityLabelTop + 14.0f * settingsCellSize;
+				appendCenteredSettingsText("VOLUME: " + std::to_string(static_cast<int>(std::round(audioVolume * 100.0f))),
+					settingsCellSize, volumeLabelTop);
+				float volumeSliderY = volumeLabelTop + 7.0f * settingsCellSize;
+				float targetSizeLabelTop = volumeLabelTop + 11.0f * settingsCellSize;
+				appendCenteredSettingsText("BALL SIZE: " + std::to_string(static_cast<int>(std::round(aimTargetSize * 100.0f))),
+					settingsCellSize, targetSizeLabelTop);
+				float targetSizeSliderY = targetSizeLabelTop + 7.0f * settingsCellSize;
+				for (int tick = 0; tick <= 40; ++tick)
+				{
+					float pixelX = sliderLeft + sliderWidth * static_cast<float>(tick) / 40.0f;
+					fpsVertices.push_back(2.0f * pixelX / static_cast<float>(framebufferWidth) - 1.0f);
+					fpsVertices.push_back(1.0f - 2.0f * sensitivitySliderY / static_cast<float>(framebufferHeight));
+					fpsVertices.push_back(2.0f * pixelX / static_cast<float>(framebufferWidth) - 1.0f);
+					fpsVertices.push_back(1.0f - 2.0f * volumeSliderY / static_cast<float>(framebufferHeight));
+					fpsVertices.push_back(2.0f * pixelX / static_cast<float>(framebufferWidth) - 1.0f);
+					fpsVertices.push_back(1.0f - 2.0f * targetSizeSliderY / static_cast<float>(framebufferHeight));
+				}
+				auto appendSliderKnob = [&](float value, float sliderY)
+				{
+					float knobX = sliderLeft + sliderWidth * value;
+					std::vector<GLfloat> vertices = buildFpsVertices("I", framebufferWidth, framebufferHeight,
+						settingsCellSize * 2.0f, sliderY - 5.0f * settingsCellSize, knobX - 3.0f * settingsCellSize);
+					fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
+				};
+				appendSliderKnob((camera.sensitivity - 0.02f) / 0.28f, sensitivitySliderY);
+				appendSliderKnob(audioVolume, volumeSliderY);
+				appendSliderKnob((aimTargetSize - 0.25f) / 0.75f, targetSizeSliderY);
+			}
+			glm::vec3 hudPlayerBallPosition = camera.Position - glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
+			bool trainerHudVisible = !gamePaused &&
+				hudPlayerBallPosition.x >= aimTrainerMinX && hudPlayerBallPosition.x <= aimTrainerMaxX &&
+				hudPlayerBallPosition.z >= aimTrainerMinZ && hudPlayerBallPosition.z <= aimTrainerMaxZ;
+			if (trainerHudVisible)
+			{
+				const std::array<std::string, 3> scenarioLabels = {
+					!sixBallsScenario && !twoBallsScenario ? "> 1 THREE BALLS" : "  1 THREE BALLS",
+					twoBallsScenario ? "> 2 TWO BALLS" : "  2 TWO BALLS",
+					sixBallsScenario ? "> 4 SIX BALLS" : "  4 SIX BALLS"
+				};
+				float selectorCellSize = fpsCellSize;
+				float selectorTop = static_cast<float>(framebufferHeight) * 0.08f;
+				float selectorRowSpacing = 6.0f * selectorCellSize;
+				for (std::size_t selectorIndex = 0; selectorIndex < scenarioLabels.size(); ++selectorIndex)
+				{
+					float labelWidth = static_cast<float>(scenarioLabels[selectorIndex].size() * 4 - 1) * selectorCellSize;
+					std::vector<GLfloat> vertices = buildFpsVertices(scenarioLabels[selectorIndex],
+						framebufferWidth, framebufferHeight, selectorCellSize,
+						selectorTop + static_cast<float>(selectorIndex) * selectorRowSpacing,
+						(static_cast<float>(framebufferWidth) - labelWidth) * 0.5f);
+					fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
 				}
 			}
 			if (rankMenuPage)
@@ -1350,7 +2360,8 @@ void main()
 							cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f);
 						fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
 					};
-					appendCenteredScenarioText("THREE BALLS", menuCellSize * 2.0f, static_cast<float>(framebufferHeight) * 0.28f);
+					appendCenteredScenarioText(sixBallsScenario ? "SIX BALLS" :
+						(twoBallsScenario ? "TWO BALLS" : "THREE BALLS"), menuCellSize * 2.0f, static_cast<float>(framebufferHeight) * 0.28f);
 					appendCenteredScenarioText("HIGH SCORE", menuCellSize, static_cast<float>(framebufferHeight) * 0.38f);
 					std::string scenarioRankName = getCurrentAimRank().name;
 					float rankTextWidth = static_cast<float>(scenarioRankName.size() * 4 - 1) * menuCellSize * 2.0f;
@@ -1361,7 +2372,8 @@ void main()
 					rankVertexCount = static_cast<GLsizei>(scenarioRankVertices.size() / 2);
 					currentRankColor = getCurrentAimRank().color;
 					fpsVertices.insert(fpsVertices.end(), scenarioRankVertices.begin(), scenarioRankVertices.end());
-					appendCenteredScenarioText("SCORE " + std::to_string(aimHighScore), menuCellSize, static_cast<float>(framebufferHeight) * 0.60f);
+					appendCenteredScenarioText("SCORE " + std::to_string(sixBallsScenario ? sixBallsHighScore :
+						(twoBallsScenario ? twoBallsHighScore : aimHighScore)), menuCellSize, static_cast<float>(framebufferHeight) * 0.60f);
 				}
 			}
 			glBindBuffer(GL_ARRAY_BUFFER, fpsVBO);
@@ -1392,7 +2404,7 @@ void main()
 			{
 				cameraVerticalVelocity = jumpSpeed;
 				jumpBufferRemaining = 0.0f;
-				PlaySoundA(reinterpret_cast<LPCSTR>(jumpSound.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+				PlaySoundA(reinterpret_cast<LPCSTR>(adjustedJumpSound.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
 			}
 
 			cameraVerticalVelocity -= cameraGravity * step;
@@ -1418,6 +2430,18 @@ void main()
 			if (leftPressed) wishDirection -= cameraRight;
 			if (rightPressed) wishDirection += cameraRight;
 			bool hasMovementInput = forwardPressed || backwardPressed || leftPressed || rightPressed;
+		if (mustCompleteScenarioBeforeLeaving)
+		{
+			glm::vec3 playerBallPosition = camera.Position - glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
+			if (playerBallPosition.x <= aimTrainerMinX && camera.horizontalVelocity.x < 0.0f)
+				camera.horizontalVelocity.x = 0.0f;
+			else if (playerBallPosition.x >= aimTrainerMaxX && camera.horizontalVelocity.x > 0.0f)
+				camera.horizontalVelocity.x = 0.0f;
+			if (playerBallPosition.z <= aimTrainerMinZ && camera.horizontalVelocity.z < 0.0f)
+				camera.horizontalVelocity.z = 0.0f;
+			else if (playerBallPosition.z >= aimTrainerMaxZ && camera.horizontalVelocity.z > 0.0f)
+				camera.horizontalVelocity.z = 0.0f;
+		}
 			if (!cameraOnGround && !hasMovementInput)
 				wishDirection = cameraForward;
 
@@ -1482,6 +2506,13 @@ void main()
 
 			glm::vec3 positionBeforeMovement = camera.Position;
 			camera.Position += camera.horizontalVelocity * step;
+			if (mustCompleteScenarioBeforeLeaving)
+			{
+				glm::vec3 playerBallPosition = camera.Position - glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
+				playerBallPosition.x = glm::clamp(playerBallPosition.x, aimTrainerMinX, aimTrainerMaxX);
+				playerBallPosition.z = glm::clamp(playerBallPosition.z, aimTrainerMinZ, aimTrainerMaxZ);
+				camera.Position = playerBallPosition + glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
+			}
 			resolveCameraBallCollisions();
 			jumpBufferRemaining = std::max(0.0f, jumpBufferRemaining - step);
 			physicsAccumulator -= step;
@@ -1491,11 +2522,40 @@ void main()
 		if (xPressed && !previousX)
 			activeBall = (activeBall + 1) % static_cast<int>(balls.size());
 		previousX = xPressed;
-
 		bool zPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
 		if (zPressed && !previousZ)
 			activeBall = (activeBall + static_cast<int>(balls.size()) - 1) % static_cast<int>(balls.size());
 		previousZ = zPressed;
+		bool twoBallsPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS;
+		bool threeBallsPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS;
+		bool sixBallsPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS;
+		if (twoBallsPressed && !previousTwoBallsKey)
+		{
+			twoBallsScenario = true;
+			sixBallsScenario = false;
+			aimTaskRunning = false;
+			aimTaskFinished = false;
+			aimTaskScore = 0;
+		}
+		else if (threeBallsPressed && !previousThreeBallsKey)
+		{
+			twoBallsScenario = false;
+			sixBallsScenario = false;
+			aimTaskRunning = false;
+			aimTaskFinished = false;
+			aimTaskScore = 0;
+		}
+		else if (sixBallsPressed && !previousSixBallsKey)
+		{
+			twoBallsScenario = false;
+			sixBallsScenario = true;
+			aimTaskRunning = false;
+			aimTaskFinished = false;
+			aimTaskScore = 0;
+		}
+		previousTwoBallsKey = twoBallsPressed;
+		previousThreeBallsKey = threeBallsPressed;
+		previousSixBallsKey = sixBallsPressed;
 
 		for (std::size_t ballIndex = 0; !gamePaused && ballIndex < balls.size(); ++ballIndex)
 		{
@@ -1550,18 +2610,69 @@ void main()
 			aimTaskFinished = false;
 			aimTaskRunning = true;
 			aimTaskStartTime = currentTime;
+			if (sixBallsScenario)
+				randomizeSixBallTargets();
+			mustCompleteScenarioBeforeLeaving = !(sixBallsScenario ? completedSixBallsOnce :
+				(twoBallsScenario ? completedTwoBallsOnce : completedThreeBallsOnce));
 		}
 		if (!gamePaused)
 			wasAimTrainerActive = aimTrainerActive;
+		if (!gamePaused && aimTaskRunning && twoBallsScenario)
+		{
+			for (std::size_t targetIndex = 0; targetIndex < twoBallTargets.size(); ++targetIndex)
+			{
+				glm::vec3& target = twoBallTargets[targetIndex];
+				target.x += twoBallTargetDirections[targetIndex] * twoBallTargetSpeed * deltaTime;
+				if (target.x >= twoBallTargetMaxX)
+				{
+					target.x = twoBallTargetMaxX;
+					twoBallTargetDirections[targetIndex] = -1.0f;
+				}
+				else if (target.x <= twoBallTargetMinX)
+				{
+					target.x = twoBallTargetMinX;
+					twoBallTargetDirections[targetIndex] = 1.0f;
+				}
+			}
+		}
 		if (!gamePaused && aimTaskRunning && aimTaskClockTime - aimTaskStartTime >= aimTaskDurationSeconds)
 		{
 			aimTaskRunning = false;
 			aimTaskFinished = true;
 			aimTaskFinishedTime = currentTime;
-			if (aimTaskScore > aimHighScore)
+			if (sixBallsScenario)
+				completedSixBallsOnce = true;
+			else if (twoBallsScenario)
+				completedTwoBallsOnce = true;
+			else
+				completedThreeBallsOnce = true;
+			mustCompleteScenarioBeforeLeaving = false;
+			int& scenarioHighScore = sixBallsScenario ? sixBallsHighScore :
+				(twoBallsScenario ? twoBallsHighScore : aimHighScore);
+			const fs::path& scenarioHighScorePath = sixBallsScenario ? sixBallsHighScorePath :
+				(twoBallsScenario ? twoBallsHighScorePath : aimHighScorePath);
+			if (aimTaskScore > scenarioHighScore)
 			{
-				aimHighScore = aimTaskScore;
-				saveAimHighScore(aimHighScorePath, aimHighScore);
+				scenarioHighScore = aimTaskScore;
+				saveAimHighScore(scenarioHighScorePath, scenarioHighScore);
+				if (!authenticatedSessionToken.empty())
+				{
+					std::string sessionToken = authenticatedSessionToken;
+					int aimBestScore = aimHighScore;
+					int twoBallsBestScore = twoBallsHighScore;
+					int sixBallsBestScore = sixBallsHighScore;
+					try
+					{
+						rankSyncThreads.emplace_back([sessionToken = std::move(sessionToken), aimBestScore,
+							twoBallsBestScore, sixBallsBestScore]() mutable
+						{
+							sendRankScores(sessionToken, aimBestScore, twoBallsBestScore, sixBallsBestScore);
+						});
+					}
+					catch (const std::system_error&)
+					{
+					}
+				}
 			}
 		}
 		if (aimTrainerActive)
@@ -1577,30 +2688,111 @@ void main()
 		camera.updateMatrix(45.0f, 0.1f, 500.0f);
 
 		bool leftMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-		if (!gamePaused && aimTrainerActive && aimTaskRunning && leftMousePressed && !previousLeftMouse)
+		bool scenarioSelectorClicked = false;
+		if (!gamePaused && aimTrainerActive && leftMousePressed && !previousLeftMouse)
 		{
-			glm::vec3 shotDirection = glm::normalize(camera.Orientation);
-			float closestHitDistance = std::numeric_limits<float>::max();
-			int hitTargetIndex = -1;
-			for (std::size_t targetIndex = 0; targetIndex < aimTargets.size(); ++targetIndex)
+			int selectorWindowWidth = 0;
+			int selectorWindowHeight = 0;
+			int selectorFramebufferWidth = 0;
+			int selectorFramebufferHeight = 0;
+			glfwGetWindowSize(window, &selectorWindowWidth, &selectorWindowHeight);
+			glfwGetFramebufferSize(window, &selectorFramebufferWidth, &selectorFramebufferHeight);
+			double cursorX = 0.0;
+			double cursorY = 0.0;
+			glfwGetCursorPos(window, &cursorX, &cursorY);
+			if (selectorWindowWidth > 0 && selectorWindowHeight > 0 &&
+				selectorFramebufferWidth > 0 && selectorFramebufferHeight > 0)
 			{
-				glm::vec3 toTarget = aimTargets[targetIndex] - camera.Position;
-				float alongRay = glm::dot(toTarget, shotDirection);
-				if (alongRay <= 0.0f || alongRay >= closestHitDistance)
-					continue;
-
-				float perpendicularDistanceSquared = glm::dot(toTarget, toTarget) - alongRay * alongRay;
-				if (perpendicularDistanceSquared <= ballRadius * ballRadius)
+				float clickX = static_cast<float>(cursorX * selectorFramebufferWidth / selectorWindowWidth);
+				float clickY = static_cast<float>(cursorY * selectorFramebufferHeight / selectorWindowHeight);
+				float selectorCellSize = fpsCellSize;
+				float selectorTop = static_cast<float>(selectorFramebufferHeight) * 0.08f;
+				float selectorRowSpacing = 6.0f * selectorCellSize;
+				int clickedRow = static_cast<int>(std::round((clickY - selectorTop) / selectorRowSpacing));
+				float clickedRowTop = selectorTop + static_cast<float>(clickedRow) * selectorRowSpacing;
+				const std::array<std::string, 3> selectorLabels = {
+					"  1 THREE BALLS", "  2 TWO BALLS", "  4 SIX BALLS"
+				};
+				float rowLabelWidth = clickedRow >= 0 && clickedRow < 3
+					? static_cast<float>(selectorLabels[static_cast<std::size_t>(clickedRow)].size() * 4 - 1) * selectorCellSize
+					: 0.0f;
+				float rowLabelLeft = (static_cast<float>(selectorFramebufferWidth) - rowLabelWidth) * 0.5f;
+				if (clickedRow >= 0 && clickedRow < 3 &&
+					clickY >= clickedRowTop - 5.0f * selectorCellSize &&
+					clickY <= clickedRowTop + selectorCellSize &&
+					clickX >= rowLabelLeft - 2.0f * selectorCellSize &&
+					clickX <= rowLabelLeft + rowLabelWidth + 2.0f * selectorCellSize)
 				{
-					closestHitDistance = alongRay;
-					hitTargetIndex = static_cast<int>(targetIndex);
+					if (clickedRow == 0 && (twoBallsScenario || sixBallsScenario))
+					{
+						twoBallsScenario = false;
+						sixBallsScenario = false;
+						scenarioSelectorClicked = true;
+					}
+					else if (clickedRow == 1 && !twoBallsScenario)
+					{
+						twoBallsScenario = true;
+						sixBallsScenario = false;
+						scenarioSelectorClicked = true;
+					}
+					else if (clickedRow == 2 && !sixBallsScenario)
+					{
+						twoBallsScenario = false;
+						sixBallsScenario = true;
+						scenarioSelectorClicked = true;
+					}
+					if (scenarioSelectorClicked)
+					{
+						aimTaskRunning = false;
+						aimTaskFinished = false;
+						aimTaskScore = 0;
+					}
 				}
 			}
-			if (hitTargetIndex >= 0)
+		}
+		if (!gamePaused && aimTrainerActive && aimTaskRunning && leftMousePressed && !previousLeftMouse)
+		{
+			if (!scenarioSelectorClicked)
 			{
-				++aimTaskScore;
-				respawnAimTarget(static_cast<std::size_t>(hitTargetIndex));
-				PlaySoundA(reinterpret_cast<LPCSTR>(aimTargetHitSound.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+				glm::vec3 shotDirection = glm::normalize(camera.Orientation);
+				float closestHitDistance = std::numeric_limits<float>::max();
+				int hitTargetIndex = -1;
+				std::size_t activeTargetCount = sixBallsScenario ? sixBallTargets.size() :
+					(twoBallsScenario ? twoBallTargets.size() : aimTargets.size());
+				for (std::size_t targetIndex = 0; targetIndex < activeTargetCount; ++targetIndex)
+				{
+					if (sixBallsScenario && !sixBallTargetVisible[targetIndex])
+						continue;
+					glm::vec3 targetPosition = sixBallsScenario ? sixBallTargets[targetIndex] :
+						(twoBallsScenario ? twoBallTargets[targetIndex] : aimTargets[targetIndex]);
+					glm::vec3 toTarget = targetPosition - camera.Position;
+					float alongRay = glm::dot(toTarget, shotDirection);
+					if (alongRay <= 0.0f || alongRay >= closestHitDistance)
+						continue;
+
+					float perpendicularDistanceSquared = glm::dot(toTarget, toTarget) - alongRay * alongRay;
+					float targetHitRadius = ballRadius * aimTargetSize *
+						(sixBallsScenario ? sixBallTargetSizeMultiplier * 1.5f : 1.0f);
+					if (perpendicularDistanceSquared <= targetHitRadius * targetHitRadius)
+					{
+						closestHitDistance = alongRay;
+						hitTargetIndex = static_cast<int>(targetIndex);
+					}
+				}
+				if (hitTargetIndex >= 0)
+				{
+					++aimTaskScore;
+					if (sixBallsScenario)
+						respawnSixBallTarget(static_cast<std::size_t>(hitTargetIndex));
+					else
+					{
+						if (twoBallsScenario)
+							respawnTwoBallTarget(static_cast<std::size_t>(hitTargetIndex));
+						else
+							respawnAimTarget(static_cast<std::size_t>(hitTargetIndex));
+					}
+					PlaySoundA(reinterpret_cast<LPCSTR>(adjustedAimTargetHitSound.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+				}
 			}
 		}
 		previousLeftMouse = leftMousePressed;
@@ -1675,8 +2867,25 @@ void main()
 			glm::mat4 renderRotation = ballIndex == playerBallIndex ? playerBallRotation : glm::mat4(1.0f);
 			orbModel.DrawWithTint(shaderProgram, camera, ballRenderPosition, glm::vec3(1.0f, 0.12f, 0.12f), renderScale, renderRotation);
 		}
-		for (const glm::vec3& targetPosition : aimTargets)
-			orbModel.DrawWithTint(shaderProgram, camera, targetPosition, glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(1.0f));
+		if (sixBallsScenario)
+		{
+			for (std::size_t targetIndex = 0; targetIndex < sixBallTargets.size(); ++targetIndex)
+			{
+				if (sixBallTargetVisible[targetIndex])
+					orbModel.DrawWithTint(shaderProgram, camera, sixBallTargets[targetIndex],
+						glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(aimTargetSize * sixBallTargetSizeMultiplier));
+			}
+		}
+		else if (twoBallsScenario)
+		{
+			for (const glm::vec3& targetPosition : twoBallTargets)
+				orbModel.DrawWithTint(shaderProgram, camera, targetPosition, glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(aimTargetSize));
+		}
+		else
+		{
+			for (const glm::vec3& targetPosition : aimTargets)
+				orbModel.DrawWithTint(shaderProgram, camera, targetPosition, glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(aimTargetSize));
+		}
 		camera.Position = simulationCameraPosition;
 		camera.Orientation = simulationOrientation;
 
@@ -1700,14 +2909,14 @@ void main()
 			glBindVertexArray(0);
 		}
 		glUniform1f(crosshairAspectLocation, 1.0f);
-		glUniform1f(crosshairPointSizeLocation, fpsCellSize + 2.0f);
+		glUniform1f(crosshairPointSizeLocation, 2.0f);
 		glUniform4f(crosshairColorLocation, 0.0f, 0.0f, 0.0f, 0.85f);
 		glBindVertexArray(fpsVAO);
 		glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(fpsVertices.size() / 2));
-		glUniform1f(crosshairPointSizeLocation, fpsCellSize);
+		glUniform1f(crosshairPointSizeLocation, 1.0f);
 		glUniform4f(crosshairColorLocation, 1.0f, 1.0f, 1.0f, 1.0f);
 		glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(fpsVertices.size() / 2));
-		glUniform1f(crosshairPointSizeLocation, fpsCellSize + 1.0f);
+		glUniform1f(crosshairPointSizeLocation, 1.0f);
 		for (std::size_t rankIndex = 0; rankIndex < rankLadderVertexStarts.size(); ++rankIndex)
 		{
 			if (rankLadderVertexCounts[rankIndex] == 0)
@@ -1728,6 +2937,11 @@ void main()
 		glfwPollEvents();
 	};
 
+	if (signUpAuthThread.joinable())
+		signUpAuthThread.join();
+	for (std::thread& rankSyncThread : rankSyncThreads)
+		if (rankSyncThread.joinable())
+			rankSyncThread.join();
 	shaderProgram.Delete();
 	glDeleteBuffers(1, &shadowVBO);
 	glDeleteVertexArrays(1, &shadowVAO);
