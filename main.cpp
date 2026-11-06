@@ -2,20 +2,140 @@
 #include<fstream>
 #include<algorithm>
 #include<cmath>
+#include<cstdlib>
+#include<cstdint>
+#include<cstring>
+#include<array>
+#include<mutex>
 #include<vector>
+#include<unordered_map>
+#ifndef _WIN32
+#include<curl/curl.h>
+#include<ft2build.h>
+#include FT_FREETYPE_H
+#define MINIAUDIO_IMPLEMENTATION
+#include<miniaudio.h>
+#ifdef __APPLE__
+#include<mach-o/dyld.h>
+#else
+#include<unistd.h>
+#endif
+#endif
+#include<thread>
 #define NOMINMAX
+#ifdef _WIN32
 #include<Windows.h>
 #include<winhttp.h>
 #include<mmsystem.h>
-#include<cstdint>
-#include<cstring>
+#endif
+#ifdef _WIN32
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "winhttp.lib")
+#endif
 namespace fs = std::filesystem;
 
+#ifdef _WIN32
+struct NativeWindowIcon
+{
+	HICON handle = nullptr;
+	~NativeWindowIcon() { if (handle) DestroyIcon(handle); }
+};
+#endif
+
+#ifndef _WIN32
+struct PortableAudioState
+{
+	ma_engine engine{};
+	ma_decoder jumpDecoder{};
+	ma_decoder hitDecoder{};
+	ma_sound jumpSound{};
+	ma_sound hitSound{};
+	bool initialized = false;
+	bool jumpInitialized = false;
+	bool hitInitialized = false;
+	bool jumpSoundInitialized = false;
+	bool hitSoundInitialized = false;
+
+	~PortableAudioState()
+	{
+		if (hitSoundInitialized) ma_sound_uninit(&hitSound);
+		if (jumpSoundInitialized) ma_sound_uninit(&jumpSound);
+		if (hitInitialized) ma_decoder_uninit(&hitDecoder);
+		if (jumpInitialized) ma_decoder_uninit(&jumpDecoder);
+		if (initialized) ma_engine_uninit(&engine);
+	}
+};
+
+PortableAudioState portableAudio;
+
+bool initializePortableAudio(const std::vector<std::uint8_t>& jumpWav, const std::vector<std::uint8_t>& hitWav)
+{
+	ma_engine_config engineConfig = ma_engine_config_init();
+	if (ma_engine_init(&engineConfig, &portableAudio.engine) != MA_SUCCESS)
+		return false;
+	portableAudio.initialized = true;
+	ma_decoder_config decoderConfig = ma_decoder_config_init(ma_engine_get_channels(&portableAudio.engine),
+		ma_engine_get_sample_rate(&portableAudio.engine));
+	if (ma_decoder_init_memory(jumpWav.data(), jumpWav.size(), &decoderConfig, &portableAudio.jumpDecoder) != MA_SUCCESS)
+		return false;
+	portableAudio.jumpInitialized = true;
+	if (ma_sound_init_from_data_source(&portableAudio.engine, &portableAudio.jumpDecoder,
+		MA_SOUND_FLAG_NO_SPATIALIZATION, nullptr, &portableAudio.jumpSound) != MA_SUCCESS)
+		return false;
+	portableAudio.jumpSoundInitialized = true;
+	if (ma_decoder_init_memory(hitWav.data(), hitWav.size(), &decoderConfig, &portableAudio.hitDecoder) != MA_SUCCESS)
+		return false;
+	portableAudio.hitInitialized = true;
+	if (ma_sound_init_from_data_source(&portableAudio.engine, &portableAudio.hitDecoder,
+		MA_SOUND_FLAG_NO_SPATIALIZATION, nullptr, &portableAudio.hitSound) != MA_SUCCESS)
+		return false;
+	portableAudio.hitSoundInitialized = true;
+	return true;
+}
+
+void playPortableSound(bool hitSound)
+{
+	if (!portableAudio.initialized)
+		return;
+	ma_sound& sound = hitSound ? portableAudio.hitSound : portableAudio.jumpSound;
+	if ((hitSound && !portableAudio.hitSoundInitialized) || (!hitSound && !portableAudio.jumpSoundInitialized))
+		return;
+	ma_sound_seek_to_pcm_frame(&sound, 0);
+	ma_sound_start(&sound);
+}
+
+void setPortableAudioVolume(float volume)
+{
+	if (portableAudio.initialized)
+		ma_engine_set_volume(&portableAudio.engine, std::clamp(volume, 0.0f, 1.0f));
+}
+#endif
+
+fs::path getApplicationDataDirectory()
+{
+#ifdef _WIN32
+	char* localAppData = nullptr;
+	size_t localAppDataLength = 0;
+	if (const char* localAppDataEnvironment = std::getenv("LOCALAPPDATA"); localAppDataEnvironment && *localAppDataEnvironment)
+	{
+		return fs::path(localAppDataEnvironment) / "AimTrainer";
+	}
+#elif defined(__APPLE__)
+	if (const char* path = std::getenv("HOME"); path && *path)
+		return fs::path(path) / "Library" / "Application Support" / "AimTrainer";
+#else
+	if (const char* path = std::getenv("XDG_DATA_HOME"); path && *path)
+		return fs::path(path) / "AimTrainer";
+	if (const char* path = std::getenv("HOME"); path && *path)
+		return fs::path(path) / ".local" / "share" / "AimTrainer";
+#endif
+	return fs::temp_directory_path() / "AimTrainer";
+}
+
+#ifdef _WIN32
 bool extractEmbeddedResource(HMODULE module, int resourceId, const fs::path& destination)
 {
-	HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+	HRSRC resource = FindResourceA(module, MAKEINTRESOURCEA(resourceId), RT_RCDATA);
 	if (resource == nullptr)
 		return false;
 
@@ -38,6 +158,7 @@ bool extractEmbeddedResource(HMODULE module, int resourceId, const fs::path& des
 	output.write(static_cast<const char*>(resourceBytes), static_cast<std::streamsize>(resourceSize));
 	return output.good();
 }
+#endif
 
 struct TemporaryAssetDirectory
 {
@@ -54,62 +175,32 @@ struct TemporaryAssetDirectory
 
 fs::path getAimHighScorePath()
 {
-	wchar_t localAppData[MAX_PATH] = {};
-	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
-		? fs::path(localAppData)
-		: fs::temp_directory_path();
-	return dataRoot / L"AimTrainer" / L"rank_highscore_v2.txt";
+	return getApplicationDataDirectory() / "rank_highscore_v2.txt";
 }
 
 fs::path getTwoBallsHighScorePath()
 {
-	wchar_t localAppData[MAX_PATH] = {};
-	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
-		? fs::path(localAppData)
-		: fs::temp_directory_path();
-	return dataRoot / L"AimTrainer" / L"two_balls_highscore.txt";
+	return getApplicationDataDirectory() / "two_balls_highscore.txt";
 }
 
 fs::path getSixBallsHighScorePath()
 {
-	wchar_t localAppData[MAX_PATH] = {};
-	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
-		? fs::path(localAppData)
-		: fs::temp_directory_path();
-	return dataRoot / L"AimTrainer" / L"six_balls_highscore.txt";
+	return getApplicationDataDirectory() / "six_balls_highscore.txt";
 }
 
 fs::path getMouseSensitivityPath()
 {
-	wchar_t localAppData[MAX_PATH] = {};
-	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
-		? fs::path(localAppData)
-		: fs::temp_directory_path();
-	return dataRoot / L"AimTrainer" / L"sensitivity.txt";
+	return getApplicationDataDirectory() / "sensitivity.txt";
 }
 
 fs::path getAudioVolumePath()
 {
-	wchar_t localAppData[MAX_PATH] = {};
-	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
-		? fs::path(localAppData)
-		: fs::temp_directory_path();
-	return dataRoot / L"AimTrainer" / L"audio_volume.txt";
+	return getApplicationDataDirectory() / "audio_volume.txt";
 }
 
 fs::path getAimTargetSizePath()
 {
-	wchar_t localAppData[MAX_PATH] = {};
-	DWORD pathLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-	fs::path dataRoot = pathLength > 0 && pathLength < MAX_PATH
-		? fs::path(localAppData)
-		: fs::temp_directory_path();
-	return dataRoot / L"AimTrainer" / L"target_size.txt";
+	return getApplicationDataDirectory() / "target_size.txt";
 }
 
 float loadMouseSensitivity(const fs::path& sensitivityPath)
@@ -223,21 +314,18 @@ void saveAimHighScore(const fs::path& scorePath, int score)
 #include"Model.h"
 #include<iostream>
 #include<array>
-#include<algorithm>
-#include<cmath>
 #include<limits>
 #include<random>
 #include<string>
 #include<string_view>
 #include<system_error>
 #include<thread>
-#include<mutex>
-#include<unordered_map>
-#include<vector>
 #include<glad/glad.h>
 #include<GLFW/glfw3.h>
+#ifdef _WIN32
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include<GLFW/glfw3native.h>
+#endif
 #include<stb/stb_image.h>
 #include<glm/glm.hpp>
 #include<glm/gtc/matrix_transform.hpp>
@@ -546,6 +634,18 @@ SignUpResult signUpResult;
 bool signUpResultReady = false;
 std::thread signUpAuthThread;
 
+#ifndef _WIN32
+size_t appendCurlResponse(char* data, size_t size, size_t count, void* context)
+{
+	size_t bytes = size * count;
+	auto* response = static_cast<std::string*>(context);
+	if (response->size() + bytes > 1024 * 1024)
+		return 0;
+	response->append(data, bytes);
+	return bytes;
+}
+#endif
+
 bool isAuthApiConfigured()
 {
 	std::string_view baseUrl = auth_api_config::baseUrl;
@@ -554,6 +654,7 @@ bool isAuthApiConfigured()
 	return (secureUrl || localDevelopmentUrl) && baseUrl.find("YOUR-API-HOST") == std::string_view::npos;
 }
 
+#ifdef _WIN32
 std::wstring utf8ToWide(const std::string& value)
 {
 	if (value.empty())
@@ -565,10 +666,15 @@ std::wstring utf8ToWide(const std::string& value)
 	MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), converted.data(), length);
 	return converted;
 }
+#endif
 
 struct ApiResponse
 {
+#ifdef _WIN32
 	DWORD statusCode = 0;
+#else
+	long statusCode = 0;
+#endif
 	bool received = false;
 	std::string body;
 };
@@ -577,6 +683,7 @@ ApiResponse sendApiRequest(const std::string& method, const std::string& path, c
 	const std::string& bearerToken = {})
 {
 	ApiResponse response;
+#ifdef _WIN32
 	std::wstring baseUrl = utf8ToWide(auth_api_config::baseUrl);
 	URL_COMPONENTS urlComponents{};
 	urlComponents.dwStructSize = sizeof(urlComponents);
@@ -644,6 +751,49 @@ ApiResponse sendApiRequest(const std::string& method, const std::string& path, c
 	WinHttpCloseHandle(connection);
 	WinHttpCloseHandle(session);
 	return response;
+#else
+	CURL* request = curl_easy_init();
+	if (!request)
+		return response;
+	std::string url = std::string(auth_api_config::baseUrl);
+	while (!url.empty() && url.back() == '/')
+		url.pop_back();
+	url += path;
+	struct curl_slist* headers = curl_slist_append(nullptr, "Content-Type: application/json");
+	if (headers == nullptr)
+	{
+		curl_easy_cleanup(request);
+		return response;
+	}
+	std::string authorization;
+	if (!bearerToken.empty())
+	{
+		authorization = "Authorization: Bearer " + bearerToken;
+		struct curl_slist* updatedHeaders = curl_slist_append(headers, authorization.c_str());
+		if (updatedHeaders == nullptr)
+		{
+			curl_slist_free_all(headers);
+			curl_easy_cleanup(request);
+			return response;
+		}
+		headers = updatedHeaders;
+	}
+	curl_easy_setopt(request, CURLOPT_URL, url.c_str());
+	curl_easy_setopt(request, CURLOPT_CUSTOMREQUEST, method.c_str());
+	curl_easy_setopt(request, CURLOPT_HTTPHEADER, headers);
+	curl_easy_setopt(request, CURLOPT_TIMEOUT, 15L);
+	curl_easy_setopt(request, CURLOPT_CONNECTTIMEOUT, 5L);
+	curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, appendCurlResponse);
+	curl_easy_setopt(request, CURLOPT_WRITEDATA, &response.body);
+	if (!body.empty())
+		curl_easy_setopt(request, CURLOPT_POSTFIELDS, body.c_str());
+	response.received = curl_easy_perform(request) == CURLE_OK;
+	if (response.received)
+		curl_easy_getinfo(request, CURLINFO_RESPONSE_CODE, &response.statusCode);
+	curl_slist_free_all(headers);
+	curl_easy_cleanup(request);
+	return response;
+#endif
 }
 
 std::string getJsonStringValue(const std::string& json, const std::string& key)
@@ -789,6 +939,7 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 		std::vector<glm::vec2> pixels;
 		if (!text.empty())
 		{
+#ifdef _WIN32
 			BITMAPINFO bitmapInfo{};
 			bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
 			bitmapInfo.bmiHeader.biWidth = textWidth;
@@ -835,6 +986,55 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 				DeleteObject(bitmap);
 			if (deviceContext)
 				DeleteDC(deviceContext);
+#else
+			static FT_Library fontLibrary = nullptr;
+			static FT_Face fontFace = nullptr;
+			static bool fontLibraryInitialized = false;
+			if (!fontLibraryInitialized && FT_Init_FreeType(&fontLibrary) == 0)
+			{
+				fontLibraryInitialized = true;
+				const std::array<const char*, 7> fontPaths = {
+					"/System/Library/Fonts/Supplemental/Arial.ttf",
+					"/System/Library/Fonts/Supplemental/Helvetica.ttf",
+					"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+					"/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+					"/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+					"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+					"/System/Library/Fonts/SFNS.ttf"
+				};
+				for (const char* fontPath : fontPaths)
+				{
+					if (FT_New_Face(fontLibrary, fontPath, 0, &fontFace) == 0)
+						break;
+				}
+			}
+			if (fontFace && FT_Set_Pixel_Sizes(fontFace, 0, static_cast<FT_UInt>(fontHeight)) == 0)
+			{
+				int targetAdvance = static_cast<int>(std::lround(characterAdvance * cellSize));
+				int baseline = static_cast<int>(fontFace->size->metrics.ascender >> 6);
+				for (std::size_t characterIndex = 0; characterIndex < text.size(); ++characterIndex)
+				{
+					FT_ULong codepoint = static_cast<unsigned char>(text[characterIndex]);
+					if (FT_Load_Char(fontFace, codepoint, FT_LOAD_RENDER) != 0)
+						continue;
+					const FT_Bitmap& bitmap = fontFace->glyph->bitmap;
+					int glyphLeft = static_cast<int>(characterIndex) * targetAdvance + fontFace->glyph->bitmap_left;
+					int glyphTop = baseline - fontFace->glyph->bitmap_top;
+					for (unsigned int y = 0; y < bitmap.rows; ++y)
+					{
+						for (unsigned int x = 0; x < bitmap.width; ++x)
+						{
+							int pitch = bitmap.pitch;
+							const unsigned char* row = pitch >= 0
+								? bitmap.buffer + static_cast<std::size_t>(y) * pitch
+								: bitmap.buffer + static_cast<std::size_t>(bitmap.rows - 1 - y) * -pitch;
+							if (row[x] > 48)
+								pixels.emplace_back(static_cast<float>(glyphLeft + static_cast<int>(x)), static_cast<float>(glyphTop + static_cast<int>(y)));
+						}
+					}
+				}
+			}
+#endif
 		}
 		cachedText = renderedTextCache.emplace(std::move(cacheKey), std::move(pixels)).first;
 	}
@@ -887,7 +1087,11 @@ glm::vec3 closestPointOnTriangle(const glm::vec3& point, const glm::vec3& a, con
 
 int main()
 {
-	glfwInit();
+	if (!glfwInit())
+	{
+		std::cerr << "Failed to initialize GLFW" << std::endl;
+		return -1;
+	}
 
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -911,13 +1115,16 @@ int main()
 		glfwTerminate();
 		return -1;
 	}
-	HICON windowIcon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(501), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE));
-	if (windowIcon != nullptr)
+#ifdef _WIN32
+	NativeWindowIcon windowIcon;
+	windowIcon.handle = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(501), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE));
+	if (windowIcon.handle != nullptr)
 	{
 		HWND nativeWindow = glfwGetWin32Window(window);
-		SendMessageW(nativeWindow, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(windowIcon));
-		SendMessageW(nativeWindow, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(windowIcon));
+		SendMessageW(nativeWindow, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(windowIcon.handle));
+		SendMessageW(nativeWindow, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(windowIcon.handle));
 	}
+#endif
 	glfwMakeContextCurrent(window);
 	glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 	glfwSetCharCallback(window, signUpCharCallback);
@@ -925,7 +1132,17 @@ int main()
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 	glfwSwapInterval(0);
 
+#ifdef _WIN32
 	gladLoadGL();
+#else
+	if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress)))
+	{
+		std::cerr << "Failed to load OpenGL functions" << std::endl;
+		glfwDestroyWindow(window);
+		glfwTerminate();
+		return -1;
+	}
+#endif
 	int framebufferWidth = 0;
 	int framebufferHeight = 0;
 	glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
@@ -1134,15 +1351,28 @@ void main()
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glBindVertexArray(0);
 
+	fs::path executablePath;
+#ifdef _WIN32
 	std::vector<wchar_t> executablePathBuffer(32768);
-	DWORD executablePathLength = GetModuleFileNameW(
-		nullptr,
-		executablePathBuffer.data(),
-		static_cast<DWORD>(executablePathBuffer.size())
-	);
-	fs::path executableDirectory = executablePathLength > 0
-		? fs::path(std::wstring(executablePathBuffer.data(), executablePathLength)).parent_path()
-		: fs::current_path();
+	DWORD executablePathLength = GetModuleFileNameW(nullptr, executablePathBuffer.data(), static_cast<DWORD>(executablePathBuffer.size()));
+	if (executablePathLength > 0)
+		executablePath = fs::path(std::wstring(executablePathBuffer.data(), executablePathLength));
+#elif defined(__APPLE__)
+	uint32_t executablePathLength = 0;
+	_NSGetExecutablePath(nullptr, &executablePathLength);
+	std::vector<char> executablePathBuffer(executablePathLength + 1);
+	if (_NSGetExecutablePath(executablePathBuffer.data(), &executablePathLength) == 0)
+		executablePath = fs::weakly_canonical(executablePathBuffer.data());
+#else
+	std::vector<char> executablePathBuffer(4096);
+	ssize_t executablePathLength = readlink("/proc/self/exe", executablePathBuffer.data(), executablePathBuffer.size() - 1);
+	if (executablePathLength > 0)
+	{
+		executablePathBuffer[static_cast<std::size_t>(executablePathLength)] = '\0';
+		executablePath = executablePathBuffer.data();
+	}
+#endif
+	fs::path executableDirectory = executablePath.empty() ? fs::current_path() : executablePath.parent_path();
 
 	auto hasRequiredAssets = [](const fs::path& root)
 	{
@@ -1152,6 +1382,7 @@ void main()
 			fs::exists(root / "Resources" / "models" / "orb" / "redorb.gltf");
 	};
 
+#ifdef _WIN32
 	struct EmbeddedAssetFile
 	{
 		int resourceId;
@@ -1171,14 +1402,16 @@ void main()
 		{ 402, L"Resources/models/prism/prism.bin" }
 	}};
 
+	#endif
 	fs::path assetRoot;
 	TemporaryAssetDirectory temporaryAssetDirectory;
+	#ifdef _WIN32
 	std::error_code tempDirectoryError;
 	fs::path tempAssetParent = fs::temp_directory_path(tempDirectoryError);
 	bool embeddedAssetsExtracted = !tempDirectoryError;
 	if (embeddedAssetsExtracted)
 	{
-		assetRoot = tempAssetParent / "AimTrainer" / std::to_wstring(GetCurrentProcessId());
+		assetRoot = tempAssetParent / "AimTrainer" / std::to_string(GetCurrentProcessId());
 		temporaryAssetDirectory.path = assetRoot;
 		HMODULE applicationModule = GetModuleHandleW(nullptr);
 		for (const EmbeddedAssetFile& asset : embeddedAssetFiles)
@@ -1192,6 +1425,9 @@ void main()
 	}
 	if (!embeddedAssetsExtracted)
 		assetRoot = fs::current_path();
+	#else
+	assetRoot = executableDirectory;
+	#endif
 
 	if (!hasRequiredAssets(assetRoot))
 	{
@@ -1204,15 +1440,37 @@ void main()
 				assetRoot = projectDirectory;
 			else
 			{
-				std::cerr << "Game shaders or model resources were not found." << std::endl;
-				glDeleteBuffers(1, &fpsVBO);
-				glDeleteVertexArrays(1, &fpsVAO);
-				glDeleteBuffers(1, &crosshairVBO);
-				glDeleteVertexArrays(1, &crosshairVAO);
-				glDeleteProgram(crosshairProgram);
-				glfwDestroyWindow(window);
-				glfwTerminate();
-				return -1;
+				std::error_code executableDirectoryError;
+				fs::path installDirectory = fs::weakly_canonical(executableDirectory, executableDirectoryError);
+				if (executableDirectoryError)
+					installDirectory = executableDirectory;
+				const std::array<fs::path, 3> installCandidates = {
+					installDirectory / ".." / "share" / "AimTrainer",
+					installDirectory / ".." / "Resources",
+					installDirectory / "Resources"
+				};
+				bool foundInstalledAssets = false;
+				for (const fs::path& candidate : installCandidates)
+				{
+					if (hasRequiredAssets(candidate))
+					{
+						assetRoot = candidate;
+						foundInstalledAssets = true;
+						break;
+					}
+				}
+				if (!foundInstalledAssets)
+				{
+					std::cerr << "Game shaders or model resources were not found." << std::endl;
+					glDeleteBuffers(1, &fpsVBO);
+					glDeleteVertexArrays(1, &fpsVAO);
+					glDeleteBuffers(1, &crosshairVBO);
+					glDeleteVertexArrays(1, &crosshairVAO);
+					glDeleteProgram(crosshairProgram);
+					glfwDestroyWindow(window);
+					glfwTerminate();
+					return -1;
+				}
 			}
 		}
 	}
@@ -1680,6 +1938,17 @@ void main()
 	std::vector<std::uint8_t> adjustedAimTargetHitSound;
 	setWavVolume(jumpSound, adjustedJumpSound, audioVolume);
 	setWavVolume(aimTargetHitSound, adjustedAimTargetHitSound, audioVolume);
+#ifndef _WIN32
+	if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
+	{
+		std::cerr << "Failed to initialize HTTPS support" << std::endl;
+		glfwTerminate();
+		return -1;
+	}
+	if (!initializePortableAudio(jumpSound, aimTargetHitSound))
+		std::cerr << "Could not initialize audio playback." << std::endl;
+	setPortableAudioVolume(audioVolume);
+#endif
 	float fpsCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
 	std::string fpsLabel = "FPS: 0";
 	std::vector<GLfloat> fpsVertices = buildFpsVertices(fpsLabel, framebufferWidth, framebufferHeight, fpsCellSize);
@@ -1885,6 +2154,9 @@ void main()
 					saveAudioVolume(audioVolumePath, audioVolume);
 					setWavVolume(jumpSound, adjustedJumpSound, audioVolume);
 					setWavVolume(aimTargetHitSound, adjustedAimTargetHitSound, audioVolume);
+#ifndef _WIN32
+					setPortableAudioVolume(audioVolume);
+#endif
 					pauseStateChanged = true;
 				}
 			}
@@ -2404,7 +2676,11 @@ void main()
 			{
 				cameraVerticalVelocity = jumpSpeed;
 				jumpBufferRemaining = 0.0f;
+#ifdef _WIN32
 				PlaySoundA(reinterpret_cast<LPCSTR>(adjustedJumpSound.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+#else
+				playPortableSound(false);
+#endif
 			}
 
 			cameraVerticalVelocity -= cameraGravity * step;
@@ -2791,7 +3067,11 @@ void main()
 						else
 							respawnAimTarget(static_cast<std::size_t>(hitTargetIndex));
 					}
+#ifdef _WIN32
 					PlaySoundA(reinterpret_cast<LPCSTR>(adjustedAimTargetHitSound.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+#else
+					playPortableSound(true);
+#endif
 				}
 			}
 		}

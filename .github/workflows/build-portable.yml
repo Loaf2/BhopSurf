@@ -1,0 +1,79 @@
+name: Build portable game packages
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            package: linux-x86_64
+          - os: macos-13
+            package: macos-x86_64
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake git pkg-config \
+            libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libasound2-dev libssl-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/package
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Install into package directory
+        run: cmake --install build
+
+      - name: Create archive
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -czf "dist/AimTrainer-${{ matrix.package }}.tar.gz" -C package .
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AimTrainer-${{ matrix.package }}
+          path: dist/AimTrainer-${{ matrix.package }}.tar.gz
+          if-no-files-found: error
+
+  create-release:
+    name: Create tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download built packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: AimTrainer-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/*.tar.gz --generate-notes
