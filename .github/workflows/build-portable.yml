@@ -20,7 +20,7 @@ jobs:
         include:
           - os: ubuntu-24.04
             package: linux-x86_64
-          - os: macos-13
+          - os: macos-15-intel
             package: macos-x86_64
 
     steps:
