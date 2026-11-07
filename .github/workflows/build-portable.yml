@@ -20,7 +20,7 @@ jobs:
         include:
           - os: ubuntu-24.04
             package: linux-x86_64
-          - os: macos-13
+          - os: macos-15-intel
             package: macos-x86_64
 
     steps:
@@ -35,7 +35,7 @@ jobs:
             build-essential cmake git pkg-config \
             libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxi-dev libasound2-dev libssl-dev \
-            libwayland-dev libwayland-bin wayland-protocols
+            libwayland-dev libwayland-bin libxkbcommon-dev wayland-protocols
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/package
