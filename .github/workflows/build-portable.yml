@@ -59,10 +59,78 @@ jobs:
           path: dist/AimTrainer-${{ matrix.package }}.tar.gz
           if-no-files-found: error
 
+  create-combined-launcher:
+    name: Create combined macOS/Linux launcher
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download platform packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: AimTrainer-*
+          path: packages
+          merge-multiple: true
+
+      - name: Build self-extracting launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          launcher="dist/AimTrainer-macos-linux.command"
+          cat > "$launcher" <<'LAUNCHER'
+          #!/bin/sh
+          set -eu
+
+          decode_base64() {
+            if base64 --decode </dev/null >/dev/null 2>&1; then
+              base64 --decode
+            else
+              base64 -D
+            fi
+          }
+
+          extract_payload() {
+            payload_name="$1"
+            destination="$2"
+            archive="$destination/package.tar.gz"
+            sed -n "/^__${payload_name}_BEGIN__$/,/^__${payload_name}_END__$/p" "$0" |
+              sed '1d;$d' | decode_base64 > "$archive"
+            mkdir -p "$destination/package"
+            tar -xzf "$archive" -C "$destination/package"
+            rm -f "$archive"
+          }
+
+          case "$(uname -s)" in
+            Darwin) payload_name=MACOS ;;
+            Linux) payload_name=LINUX ;;
+            *) echo "Unsupported platform: $(uname -s)" >&2; exit 1 ;;
+          esac
+
+          temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/aimtrainer.XXXXXX")
+          trap 'rm -rf "$temp_dir"' EXIT HUP INT TERM
+          extract_payload "$payload_name" "$temp_dir"
+          exec "$temp_dir/package/bin/AimTrainer" "$@"
+          exit 0
+          __LINUX_BEGIN__
+          LAUNCHER
+          base64 -w 76 packages/AimTrainer-linux-x86_64.tar.gz >> "$launcher"
+          printf '\n__LINUX_END__\n__MACOS_BEGIN__\n' >> "$launcher"
+          base64 -w 76 packages/AimTrainer-macos-x86_64.tar.gz >> "$launcher"
+          printf '\n__MACOS_END__\n' >> "$launcher"
+          chmod +x "$launcher"
+           tar -czf dist/AimTrainer-macos-linux.tar.gz -C dist AimTrainer-macos-linux.command
+
+      - name: Upload combined launcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: AimTrainer-macos-linux
+          path: dist/AimTrainer-macos-linux.tar.gz
+          if-no-files-found: error
+
   create-release:
     name: Create tagged release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, create-combined-launcher]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -77,4 +145,4 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release-assets/*.tar.gz --generate-notes
+        run: gh release create "${{ github.ref_name }}" release-assets/*.tar.gz --generate-notes

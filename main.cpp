@@ -74,8 +74,8 @@ bool initializePortableAudio(const std::vector<std::uint8_t>& jumpWav, const std
 	if (ma_engine_init(&engineConfig, &portableAudio.engine) != MA_SUCCESS)
 		return false;
 	portableAudio.initialized = true;
-	ma_decoder_config decoderConfig = ma_decoder_config_init(ma_engine_get_channels(&portableAudio.engine),
-		ma_engine_get_sample_rate(&portableAudio.engine));
+	ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32,
+		ma_engine_get_channels(&portableAudio.engine), ma_engine_get_sample_rate(&portableAudio.engine));
 	if (ma_decoder_init_memory(jumpWav.data(), jumpWav.size(), &decoderConfig, &portableAudio.jumpDecoder) != MA_SUCCESS)
 		return false;
 	portableAudio.jumpInitialized = true;
