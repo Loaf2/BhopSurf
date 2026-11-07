@@ -116,10 +116,13 @@ fs::path getApplicationDataDirectory()
 #ifdef _WIN32
 	char* localAppData = nullptr;
 	size_t localAppDataLength = 0;
-	if (const char* localAppDataEnvironment = std::getenv("LOCALAPPDATA"); localAppDataEnvironment && *localAppDataEnvironment)
+	if (_dupenv_s(&localAppData, &localAppDataLength, "LOCALAPPDATA") == 0 && localAppData && *localAppData)
 	{
-		return fs::path(localAppDataEnvironment) / "AimTrainer";
+		fs::path applicationDataDirectory = fs::path(localAppData) / "AimTrainer";
+		free(localAppData);
+		return applicationDataDirectory;
 	}
+	free(localAppData);
 #elif defined(__APPLE__)
 	if (const char* path = std::getenv("HOME"); path && *path)
 		return fs::path(path) / "Library" / "Application Support" / "AimTrainer";
@@ -135,7 +138,7 @@ fs::path getApplicationDataDirectory()
 #ifdef _WIN32
 bool extractEmbeddedResource(HMODULE module, int resourceId, const fs::path& destination)
 {
-	HRSRC resource = FindResourceA(module, MAKEINTRESOURCEA(resourceId), RT_RCDATA);
+	HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(resourceId), MAKEINTRESOURCEW(10));
 	if (resource == nullptr)
 		return false;
 
@@ -201,6 +204,44 @@ fs::path getAudioVolumePath()
 fs::path getAimTargetSizePath()
 {
 	return getApplicationDataDirectory() / "target_size.txt";
+}
+
+fs::path getSessionTokenPath()
+{
+	return getApplicationDataDirectory() / "session_token.txt";
+}
+
+fs::path getActivationMarkerPath()
+{
+	return getApplicationDataDirectory() / "activation.key";
+}
+
+std::string loadSessionToken(const fs::path& tokenPath)
+{
+	std::ifstream input(tokenPath);
+	std::string token;
+	std::getline(input, token);
+	if (token.size() > 512)
+		return {};
+	return token;
+}
+
+void saveSessionToken(const fs::path& tokenPath, const std::string& token)
+{
+	std::error_code error;
+	fs::create_directories(tokenPath.parent_path(), error);
+	if (error)
+		return;
+
+	std::ofstream output(tokenPath, std::ios::trunc);
+	if (output)
+		output << token;
+}
+
+void deleteSessionToken(const fs::path& tokenPath)
+{
+	std::error_code error;
+	fs::remove(tokenPath, error);
 }
 
 float loadMouseSensitivity(const fs::path& sensitivityPath)
@@ -337,6 +378,7 @@ void saveAimHighScore(const fs::path& scorePath, int score)
 #include"VBO.h"
 #include"EBO.h"
 #include"auth_api_config.h"
+#include"website_api_config.h"
 
 const int defaultWidth = 800;
 const int defaultHeight = 800;
@@ -536,7 +578,8 @@ enum class SignUpField
 {
 	Email,
 	Password,
-	ConfirmPassword
+	ConfirmPassword,
+	ActivationKey
 };
 
 struct SignUpFormState
@@ -554,12 +597,16 @@ struct SignUpFormState
 	bool showPassword = false;
 	bool resendRequested = false;
 	bool emailConfirmationPending = false;
+	bool activationMode = false;
+	std::string activationKey;
 };
 
 SignUpFormState signUpForm;
 
 std::string& getFocusedSignUpText()
 {
+	if (signUpForm.activationMode)
+		return signUpForm.activationKey;
 	if (signUpForm.focusedField == SignUpField::Password)
 		return signUpForm.password;
 	if (signUpForm.focusedField == SignUpField::ConfirmPassword)
@@ -578,6 +625,17 @@ void signUpCharCallback(GLFWwindow*, unsigned int codepoint)
 		return;
 
 	char character = static_cast<char>(codepoint);
+	if (signUpForm.activationMode)
+	{
+		if ((character >= 'a' && character <= 'z'))
+			character = static_cast<char>(character - ('a' - 'A'));
+		if (!((character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-'))
+			return;
+		if (input.size() >= 43)
+			return;
+		input.push_back(character);
+		return;
+	}
 	if (signUpForm.focusedField == SignUpField::Email)
 	{
 		bool validEmailCharacter = (character >= 'a' && character <= 'z') ||
@@ -594,6 +652,23 @@ void signUpKeyCallback(GLFWwindow*, int key, int, int action, int mods)
 {
 	if (!signUpForm.active || signUpForm.submitting || (action != GLFW_PRESS && action != GLFW_REPEAT))
 		return;
+	if (signUpForm.activationMode && action == GLFW_PRESS && key == GLFW_KEY_V && (mods & GLFW_MOD_CONTROL) != 0)
+	{
+		const char* clipboardText = glfwGetClipboardString(glfwGetCurrentContext());
+		if (clipboardText != nullptr)
+		{
+			for (const char* character = clipboardText; *character != '\0' && signUpForm.activationKey.size() < 43; ++character)
+			{
+				char pastedCharacter = *character;
+				if (pastedCharacter >= 'a' && pastedCharacter <= 'z')
+					pastedCharacter = static_cast<char>(pastedCharacter - ('a' - 'A'));
+				if ((pastedCharacter >= 'A' && pastedCharacter <= 'Z') ||
+					(pastedCharacter >= '0' && pastedCharacter <= '9') || pastedCharacter == '-')
+					signUpForm.activationKey.push_back(pastedCharacter);
+			}
+		}
+		return;
+	}
 
 	if (key == GLFW_KEY_BACKSPACE)
 	{
@@ -608,7 +683,7 @@ void signUpKeyCallback(GLFWwindow*, int key, int, int action, int mods)
 		bool backwards = glfwGetKey(glfwGetCurrentContext(), GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
 			glfwGetKey(glfwGetCurrentContext(), GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
 		int field = static_cast<int>(signUpForm.focusedField);
-		int fieldCount = signUpForm.signInMode ? 2 : 3;
+		int fieldCount = signUpForm.activationMode ? 1 : (signUpForm.signInMode ? 2 : 3);
 		signUpForm.focusedField = static_cast<SignUpField>((field + (backwards ? fieldCount - 1 : 1)) % fieldCount);
 	}
 	else if (action == GLFW_PRESS && key == GLFW_KEY_ENTER)
@@ -620,6 +695,7 @@ void signUpKeyCallback(GLFWwindow*, int key, int, int action, int mods)
 struct SignUpResult
 {
 	bool authenticated = false;
+	bool activationAccepted = false;
 	bool confirmationPending = false;
 	bool ranksSynchronized = false;
 	std::string message;
@@ -680,11 +756,11 @@ struct ApiResponse
 };
 
 ApiResponse sendApiRequest(const std::string& method, const std::string& path, const std::string& body,
-	const std::string& bearerToken = {})
+	const std::string& bearerToken = {}, std::string_view baseUrlValue = auth_api_config::baseUrl)
 {
 	ApiResponse response;
 #ifdef _WIN32
-	std::wstring baseUrl = utf8ToWide(auth_api_config::baseUrl);
+	std::wstring baseUrl = utf8ToWide(std::string(baseUrlValue));
 	URL_COMPONENTS urlComponents{};
 	urlComponents.dwStructSize = sizeof(urlComponents);
 	urlComponents.dwHostNameLength = static_cast<DWORD>(-1);
@@ -755,7 +831,7 @@ ApiResponse sendApiRequest(const std::string& method, const std::string& path, c
 	CURL* request = curl_easy_init();
 	if (!request)
 		return response;
-	std::string url = std::string(auth_api_config::baseUrl);
+	std::string url = std::string(baseUrlValue);
 	while (!url.empty() && url.back() == '/')
 		url.pop_back();
 	url += path;
@@ -841,6 +917,15 @@ bool sendRankScores(const std::string& sessionToken, int& aimBestScore, int& two
 		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore);
 }
 
+bool loadRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore)
+{
+	ApiResponse response = sendApiRequest("GET", "/api/ranks", {}, sessionToken);
+	return response.received && response.statusCode == 200 &&
+		getJsonIntValue(response.body, "aimBestScore", aimBestScore) &&
+		getJsonIntValue(response.body, "twoBallsBestScore", twoBallsBestScore) &&
+		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore);
+}
+
 std::string escapeJsonString(const std::string& value)
 {
 	std::string escaped;
@@ -866,6 +951,7 @@ SignUpResult sendAuthApiRequest(const std::string& email, const std::string& pas
 		result.message = "SET API URL";
 		return result;
 	}
+
 	std::string body = "{\"email\":\"" + escapeJsonString(email) + "\"";
 	if (!resendConfirmation)
 		body += ",\"password\":\"" + escapeJsonString(password) + "\"";
@@ -922,6 +1008,36 @@ SignUpResult sendAuthApiRequest(const std::string& email, const std::string& pas
 	return result;
 }
 
+bool isWebsiteApiConfigured()
+{
+	std::string_view baseUrl = website_api_config::baseUrl;
+	return baseUrl.starts_with("https://") && baseUrl.find("YOUR-WEBSITE-HOST") == std::string_view::npos;
+}
+
+SignUpResult sendActivationApiRequest(const std::string& email, const std::string& activationKey)
+{
+	SignUpResult result;
+	if (!isWebsiteApiConfigured())
+	{
+		result.message = "SET WEBSITE URL";
+		return result;
+	}
+	std::string body = "{\"email\":\"" + escapeJsonString(email) +
+		"\",\"activationKey\":\"" + escapeJsonString(activationKey) + "\"}";
+	ApiResponse response = sendApiRequest("POST", "/api/game/activate", body, {}, website_api_config::baseUrl);
+	if (response.received && response.statusCode == 200)
+		result.activationAccepted = true;
+	else if (response.statusCode == 403)
+		result.message = "INVALID ACTIVATION KEY";
+	else if (response.statusCode == 400)
+		result.message = "INVALID KEY FORMAT";
+	else if (!response.received)
+		result.message = "NETWORK ERROR";
+	else
+		result.message = "ACTIVATION SERVER ERROR";
+	return result;
+}
+
 std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int height, float cellSize, float topOffset = 16.0f, float leftOffset = 16.0f, float characterAdvance = 4.0f)
 {
 	std::vector<GLfloat> vertices;
@@ -930,9 +1046,13 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 
 	static std::unordered_map<std::string, std::vector<glm::vec2>> renderedTextCache;
 	int fontHeight = std::max(1, static_cast<int>(std::lround(cellSize * 6.0f)));
-	int textWidth = std::max(1, static_cast<int>(std::ceil(((text.empty() ? 0.0f :
-		(static_cast<float>(text.size() - 1) * characterAdvance + 3.0f) * cellSize) + cellSize))));
-	std::string cacheKey = text + '\0' + std::to_string(fontHeight) + ':' + std::to_string(textWidth) + ':' + std::to_string(characterAdvance);
+	int renderPadding = std::max(2, static_cast<int>(std::ceil(cellSize * 2.0f)));
+	int bitmapHeight = fontHeight + renderPadding * 2;
+	int textWidth = std::max(1, static_cast<int>(std::ceil(
+		(text.empty() ? 0.0f : (static_cast<float>(text.size() - 1) * characterAdvance + 3.0f) * cellSize) +
+		cellSize + renderPadding * 2.0f)));
+	std::string cacheKey = text + '\0' + std::to_string(fontHeight) + ':' + std::to_string(textWidth) + ':' +
+		std::to_string(bitmapHeight) + ':' + std::to_string(characterAdvance);
 	auto cachedText = renderedTextCache.find(cacheKey);
 	if (cachedText == renderedTextCache.end())
 	{
@@ -943,7 +1063,7 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 			BITMAPINFO bitmapInfo{};
 			bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
 			bitmapInfo.bmiHeader.biWidth = textWidth;
-			bitmapInfo.bmiHeader.biHeight = -fontHeight;
+			bitmapInfo.bmiHeader.biHeight = -bitmapHeight;
 			bitmapInfo.bmiHeader.biPlanes = 1;
 			bitmapInfo.bmiHeader.biBitCount = 32;
 			bitmapInfo.bmiHeader.biCompression = BI_RGB;
@@ -954,7 +1074,7 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 				OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 			if (deviceContext && bitmap && bitmapPixels && font)
 			{
-				std::memset(bitmapPixels, 0, static_cast<std::size_t>(textWidth) * fontHeight * 4);
+				std::memset(bitmapPixels, 0, static_cast<std::size_t>(textWidth) * bitmapHeight * 4);
 				HGDIOBJ previousBitmap = SelectObject(deviceContext, bitmap);
 				HGDIOBJ previousFont = SelectObject(deviceContext, font);
 				SetBkMode(deviceContext, TRANSPARENT);
@@ -966,15 +1086,15 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 					? (targetAdvance * static_cast<int>(text.size() - 1) + static_cast<int>(std::lround(3.0f * cellSize)) - naturalTextSize.cx) / static_cast<int>(text.size() - 1)
 					: 0;
 				SetTextCharacterExtra(deviceContext, characterExtra);
-				TextOutA(deviceContext, 0, 0, text.data(), static_cast<int>(text.size()));
+				TextOutA(deviceContext, renderPadding, renderPadding, text.data(), static_cast<int>(text.size()));
 				const auto* rgba = static_cast<const std::uint8_t*>(bitmapPixels);
-				for (int y = 0; y < fontHeight; ++y)
+				for (int y = 0; y < bitmapHeight; ++y)
 				{
 					for (int x = 0; x < textWidth; ++x)
 					{
 						std::size_t pixelOffset = (static_cast<std::size_t>(y) * textWidth + x) * 4;
 						if (rgba[pixelOffset] > 48 || rgba[pixelOffset + 1] > 48 || rgba[pixelOffset + 2] > 48)
-							pixels.emplace_back(static_cast<float>(x), static_cast<float>(y));
+							pixels.emplace_back(static_cast<float>(x - renderPadding), static_cast<float>(y - renderPadding));
 					}
 				}
 				SelectObject(deviceContext, previousFont);
@@ -1011,14 +1131,14 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 			if (fontFace && FT_Set_Pixel_Sizes(fontFace, 0, static_cast<FT_UInt>(fontHeight)) == 0)
 			{
 				int targetAdvance = static_cast<int>(std::lround(characterAdvance * cellSize));
-				int baseline = static_cast<int>(fontFace->size->metrics.ascender >> 6);
+				int baseline = renderPadding + static_cast<int>(fontFace->size->metrics.ascender >> 6);
 				for (std::size_t characterIndex = 0; characterIndex < text.size(); ++characterIndex)
 				{
 					FT_ULong codepoint = static_cast<unsigned char>(text[characterIndex]);
 					if (FT_Load_Char(fontFace, codepoint, FT_LOAD_RENDER) != 0)
 						continue;
 					const FT_Bitmap& bitmap = fontFace->glyph->bitmap;
-					int glyphLeft = static_cast<int>(characterIndex) * targetAdvance + fontFace->glyph->bitmap_left;
+					int glyphLeft = renderPadding + static_cast<int>(characterIndex) * targetAdvance + fontFace->glyph->bitmap_left;
 					int glyphTop = baseline - fontFace->glyph->bitmap_top;
 					for (unsigned int y = 0; y < bitmap.rows; ++y)
 					{
@@ -1029,7 +1149,8 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 								? bitmap.buffer + static_cast<std::size_t>(y) * pitch
 								: bitmap.buffer + static_cast<std::size_t>(bitmap.rows - 1 - y) * -pitch;
 							if (row[x] > 48)
-								pixels.emplace_back(static_cast<float>(glyphLeft + static_cast<int>(x)), static_cast<float>(glyphTop + static_cast<int>(y)));
+								pixels.emplace_back(static_cast<float>(glyphLeft + static_cast<int>(x) - renderPadding),
+									static_cast<float>(glyphTop + static_cast<int>(y) - renderPadding));
 						}
 					}
 				}
@@ -1038,9 +1159,24 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 		}
 		cachedText = renderedTextCache.emplace(std::move(cacheKey), std::move(pixels)).first;
 	}
+	float desiredWidth = text.empty() ? 0.0f :
+		(static_cast<float>(text.size() - 1) * characterAdvance + 3.0f) * cellSize;
+	float actualMinX = 0.0f;
+	float actualMaxX = 0.0f;
+	if (!cachedText->second.empty())
+	{
+		actualMinX = cachedText->second.front().x;
+		actualMaxX = actualMinX;
+		for (const glm::vec2& pixel : cachedText->second)
+		{
+			actualMinX = std::min(actualMinX, pixel.x);
+			actualMaxX = std::max(actualMaxX, pixel.x);
+		}
+	}
+	float horizontalAdjustment = (desiredWidth - (actualMaxX - actualMinX)) * 0.5f - actualMinX;
 	for (const glm::vec2& pixel : cachedText->second)
 	{
-		float pixelX = leftOffset + pixel.x;
+		float pixelX = leftOffset + pixel.x + horizontalAdjustment;
 		float pixelY = topOffset + pixel.y;
 		vertices.push_back(2.0f * pixelX / static_cast<float>(width) - 1.0f);
 		vertices.push_back(1.0f - 2.0f * pixelY / static_cast<float>(height));
@@ -1730,12 +1866,34 @@ void main()
 	const fs::path aimHighScorePath = getAimHighScorePath();
 	const fs::path twoBallsHighScorePath = getTwoBallsHighScorePath();
 	const fs::path sixBallsHighScorePath = getSixBallsHighScorePath();
+	const fs::path sessionTokenPath = getSessionTokenPath();
+	const fs::path activationMarkerPath = getActivationMarkerPath();
 	constexpr double aimTaskRetryCooldownSeconds = 1.0;
 	int aimTaskScore = 0;
 	int aimHighScore = loadAimHighScore(aimHighScorePath);
 	int twoBallsHighScore = loadAimHighScore(twoBallsHighScorePath);
 	int sixBallsHighScore = loadAimHighScore(sixBallsHighScorePath);
-	std::string authenticatedSessionToken;
+	std::string authenticatedSessionToken = loadSessionToken(sessionTokenPath);
+	bool locallyActivated = !loadSessionToken(activationMarkerPath).empty();
+	bool restoreAuthenticatedSession = false;
+	if (!authenticatedSessionToken.empty())
+	{
+		int remoteAimHighScore = 0;
+		int remoteTwoBallsHighScore = 0;
+		int remoteSixBallsHighScore = 0;
+		if (loadRankScores(authenticatedSessionToken, remoteAimHighScore, remoteTwoBallsHighScore, remoteSixBallsHighScore))
+		{
+			aimHighScore = std::max(aimHighScore, remoteAimHighScore);
+			twoBallsHighScore = std::max(twoBallsHighScore, remoteTwoBallsHighScore);
+			sixBallsHighScore = std::max(sixBallsHighScore, remoteSixBallsHighScore);
+			restoreAuthenticatedSession = true;
+		}
+		else
+		{
+			deleteSessionToken(sessionTokenPath);
+			authenticatedSessionToken.clear();
+		}
+	}
 	std::vector<std::thread> rankSyncThreads;
 	bool twoBallsScenario = false;
 	bool sixBallsScenario = false;
@@ -1815,9 +1973,7 @@ void main()
 	};
 	std::array<Ball, 3> balls =
 	{
-		Ball{ glm::vec3(0.0f, ballGroundY, 6.0f), glm::vec3(0.0f), true },
-		Ball{ glm::vec3(0.0f, orbSpawnHeight, 0.0f) },
-		Ball{ glm::vec3(3.0f, orbSpawnHeight, 0.0f) }
+		Ball{ glm::vec3(0.0f, ballGroundY, 6.0f), glm::vec3(0.0f), true }
 	};
 	camera.Position = balls[playerBallIndex].position + glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
 	int activeBall = 0;
@@ -1825,6 +1981,21 @@ void main()
 	bool previousZ = false;
 	bool previousLeftMouse = false;
 	bool gamePaused = true;
+	if (restoreAuthenticatedSession && locallyActivated)
+	{
+		signUpForm.active = false;
+		signUpForm.complete = true;
+		gamePaused = false;
+		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	}
+	else if (restoreAuthenticatedSession)
+	{
+		signUpForm.active = true;
+		signUpForm.activationMode = true;
+		signUpForm.focusedField = SignUpField::ActivationKey;
+		signUpForm.email = loadSessionToken(getApplicationDataDirectory() / "account.email");
+		gamePaused = true;
+	}
 	if (!isAuthApiConfigured())
 		signUpForm.status = "SET API URL";
 	bool showingControls = false;
@@ -1989,13 +2160,28 @@ void main()
 				signUpAuthThread.join();
 			signUpForm.submitting = false;
 			signUpForm.status = completedSignUpResult.message;
-			if (completedSignUpResult.confirmationPending)
+			if (signUpForm.activationMode)
+			{
+				if (completedSignUpResult.activationAccepted)
+				{
+					signUpForm.activationMode = false;
+					signUpForm.activationKey.clear();
+					saveSessionToken(activationMarkerPath, "activated");
+					signUpForm.active = false;
+					signUpForm.complete = true;
+					gamePaused = false;
+					glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+				}
+			}
+			else if (completedSignUpResult.confirmationPending)
 				signUpForm.emailConfirmationPending = true;
-			if (completedSignUpResult.message == "EMAIL NOT CONFIRMED")
+			if (!signUpForm.activationMode && completedSignUpResult.message == "EMAIL NOT CONFIRMED")
 				signUpForm.emailConfirmationPending = true;
 			if (completedSignUpResult.authenticated)
 			{
 				authenticatedSessionToken = completedSignUpResult.sessionToken;
+				saveSessionToken(sessionTokenPath, authenticatedSessionToken);
+				saveSessionToken(getApplicationDataDirectory() / "account.email", signUpForm.email);
 				if (completedSignUpResult.ranksSynchronized)
 				{
 					if (completedSignUpResult.aimBestScore > aimHighScore)
@@ -2014,15 +2200,24 @@ void main()
 						saveAimHighScore(sixBallsHighScorePath, sixBallsHighScore);
 					}
 				}
-				signUpForm.active = false;
-				signUpForm.complete = true;
+				if (signUpForm.email == website_api_config::ownerEmail)
+				{
+					signUpForm.active = false;
+					signUpForm.complete = true;
+					gamePaused = false;
+					camera.mouseInitialized = false;
+					glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+				}
+				else
+				{
+					signUpForm.activationMode = true;
+					signUpForm.focusedField = SignUpField::ActivationKey;
+					signUpForm.status = "ENTER ACTIVATION KEY";
+				}
 				signUpForm.password.clear();
 				signUpForm.confirmPassword.clear();
-				gamePaused = false;
-				camera.mouseInitialized = false;
-				glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 			}
-			else if (completedSignUpResult.message == "EMAIL ALREADY USED")
+			if (!signUpForm.activationMode && completedSignUpResult.message == "EMAIL ALREADY USED")
 			{
 				signUpForm.signInMode = true;
 				signUpForm.focusedField = SignUpField::Email;
@@ -2181,6 +2376,20 @@ void main()
 				{
 					if (!signUpForm.submitting)
 					{
+					if (signUpForm.activationMode)
+					{
+						float activationTop = static_cast<float>(clickFramebufferHeight) * 0.40f;
+						float formCenterX = static_cast<float>(clickFramebufferWidth) * 0.5f;
+						if (clickX >= formCenterX - 100.0f * menuCellSize && clickX <= formCenterX + 100.0f * menuCellSize &&
+							clickY >= activationTop && clickY <= activationTop + 14.0f * menuCellSize)
+							signUpForm.focusedField = SignUpField::ActivationKey;
+						else if (clickX >= formCenterX - 40.0f * menuCellSize && clickX <= formCenterX + 40.0f * menuCellSize &&
+							clickY >= static_cast<float>(clickFramebufferHeight) * 0.67f - 5.0f * menuCellSize &&
+							clickY <= static_cast<float>(clickFramebufferHeight) * 0.67f + 12.0f * menuCellSize)
+							signUpForm.submitRequested = true;
+					}
+					else
+					{
 					float emailLabelTop = static_cast<float>(clickFramebufferHeight) * 0.28f;
 					float passwordLabelTop = static_cast<float>(clickFramebufferHeight) * 0.40f;
 					float confirmLabelTop = static_cast<float>(clickFramebufferHeight) * 0.52f;
@@ -2205,6 +2414,16 @@ void main()
 							clickY >= static_cast<float>(clickFramebufferHeight) * 0.67f - 5.0f * menuCellSize &&
 							clickY <= static_cast<float>(clickFramebufferHeight) * 0.67f + 12.0f * menuCellSize)
 							signUpForm.submitRequested = true;
+						else if (!signUpForm.signInMode && clickX >= formCenterX - 75.0f * menuCellSize && clickX <= formCenterX + 75.0f * menuCellSize &&
+							clickY >= static_cast<float>(clickFramebufferHeight) * 0.90f - 5.0f * menuCellSize &&
+							clickY <= static_cast<float>(clickFramebufferHeight) * 0.90f + 12.0f * menuCellSize)
+						{
+							signUpForm.signInMode = true;
+							signUpForm.email = website_api_config::ownerEmail;
+							signUpForm.password.clear();
+							signUpForm.focusedField = SignUpField::Email;
+							signUpForm.status.clear();
+						}
 						else if (clickX >= formCenterX - 75.0f * menuCellSize && clickX <= formCenterX + 75.0f * menuCellSize &&
 							clickY >= static_cast<float>(clickFramebufferHeight) * 0.75f - 5.0f * menuCellSize &&
 							clickY <= static_cast<float>(clickFramebufferHeight) * 0.75f + 12.0f * menuCellSize)
@@ -2212,7 +2431,8 @@ void main()
 							signUpForm.signInMode = !signUpForm.signInMode;
 							if (signUpForm.signInMode && signUpForm.focusedField == SignUpField::ConfirmPassword)
 								signUpForm.focusedField = SignUpField::Email;
-						}
+					}
+					}
 					}
 					}
 				}
@@ -2292,7 +2512,31 @@ void main()
 			bool resendConfirmation = signUpForm.resendRequested;
 			signUpForm.submitRequested = false;
 			signUpForm.resendRequested = false;
-			if (!isAuthApiConfigured())
+			if (signUpForm.activationMode)
+			{
+				bool validFormat = signUpForm.activationKey.size() == 43 && signUpForm.activationKey.starts_with("AIM-");
+				if (!validFormat)
+					signUpForm.status = "INVALID KEY FORMAT";
+				else
+				{
+					std::string email = signUpForm.email;
+					std::string activationKey = signUpForm.activationKey;
+					signUpForm.status.clear();
+					signUpForm.submitting = true;
+					{
+						std::lock_guard<std::mutex> resultLock(signUpResultMutex);
+						signUpResultReady = false;
+					}
+					signUpAuthThread = std::thread([email = std::move(email), activationKey = std::move(activationKey)]()
+					{
+						SignUpResult requestResult = sendActivationApiRequest(email, activationKey);
+						std::lock_guard<std::mutex> resultLock(signUpResultMutex);
+						signUpResult = std::move(requestResult);
+						signUpResultReady = true;
+					});
+				}
+			}
+			else if (!isAuthApiConfigured())
 				signUpForm.status = "SET API URL";
 			else if (resendConfirmation && signUpForm.email.empty())
 				signUpForm.status = "ENTER YOUR EMAIL";
@@ -2472,11 +2716,44 @@ void main()
 				auto appendCenteredSignUpText = [&](const std::string& text, float top, float scale = 1.0f, float characterAdvance = 4.0f)
 				{
 					float cellSize = fpsCellSize * scale;
-					float width = text.empty() ? 0.0f : (static_cast<float>(text.size() - 1) * characterAdvance + 3.0f) * cellSize;
+					float textUnits = text.empty() ? 0.0f : static_cast<float>(text.size() - 1) * characterAdvance + 3.0f;
+					cellSize = std::min(cellSize, (static_cast<float>(framebufferWidth) - 24.0f * fpsCellSize) / std::max(1.0f, textUnits));
+					cellSize = std::max(1.0f, cellSize);
+					float width = textUnits * cellSize;
 					std::vector<GLfloat> textVertices = buildFpsVertices(text, framebufferWidth, framebufferHeight,
 						cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f, characterAdvance);
+					if (!textVertices.empty())
+					{
+						GLfloat minimumX = textVertices.front();
+						GLfloat maximumX = minimumX;
+						for (std::size_t vertexIndex = 0; vertexIndex < textVertices.size(); vertexIndex += 2)
+						{
+							minimumX = std::min(minimumX, textVertices[vertexIndex]);
+							maximumX = std::max(maximumX, textVertices[vertexIndex]);
+						}
+						float actualCenter = (minimumX + maximumX) * 0.5f;
+						float centerCorrection = -actualCenter;
+						for (std::size_t vertexIndex = 0; vertexIndex < textVertices.size(); vertexIndex += 2)
+							textVertices[vertexIndex] += centerCorrection;
+					}
 					fpsVertices.insert(fpsVertices.end(), textVertices.begin(), textVertices.end());
 				};
+				if (signUpForm.activationMode)
+				{
+					float activationTop = static_cast<float>(framebufferHeight) * 0.40f;
+					appendCenteredSignUpText("ACTIVATE GAME", static_cast<float>(framebufferHeight) * 0.20f, 1.6f, 4.5f);
+					appendCenteredSignUpText("ACTIVATION KEY", activationTop);
+					std::string visibleKey = signUpForm.activationKey.size() > 43
+						? signUpForm.activationKey.substr(signUpForm.activationKey.size() - 43) : signUpForm.activationKey;
+					appendCenteredSignUpText((signUpForm.focusedField == SignUpField::ActivationKey ? ">" : " ") +
+						(visibleKey.empty() ? "CLICK TO TYPE" : visibleKey), activationTop + 6.0f * fpsCellSize);
+					appendCenteredSignUpText(signUpForm.submitting ? "CONNECTING" : "ACTIVATE",
+						static_cast<float>(framebufferHeight) * 0.67f, 1.4f, 4.5f);
+					appendCenteredSignUpText(signUpForm.status.empty() ? "ENTER THE KEY FROM YOUR PURCHASE" : signUpForm.status,
+						static_cast<float>(framebufferHeight) * 0.86f);
+				}
+				else
+				{
 				float emailTop = static_cast<float>(framebufferHeight) * 0.28f;
 				float passwordTop = static_cast<float>(framebufferHeight) * 0.40f;
 				float confirmTop = static_cast<float>(framebufferHeight) * 0.52f;
@@ -2510,8 +2787,13 @@ void main()
 						appendCenteredSignUpText(signUpForm.status, static_cast<float>(framebufferHeight) * 0.89f);
 				}
 				else
-					appendCenteredSignUpText(signUpForm.status.empty() ? "TAB SWITCH ENTER SUBMIT" : signUpForm.status,
-						static_cast<float>(framebufferHeight) * 0.83f);
+				{
+					if (!signUpForm.signInMode)
+						appendCenteredSignUpText("OWNER SIGN IN", static_cast<float>(framebufferHeight) * 0.90f);
+				appendCenteredSignUpText(signUpForm.status.empty() ? "TAB SWITCH ENTER SUBMIT" : signUpForm.status,
+						static_cast<float>(framebufferHeight) * 0.96f);
+				}
+				}
 			}
 			if (gamePaused && !signUpForm.active && !rankMenuPage && !controlsMenuPage)
 			{
@@ -2596,7 +2878,7 @@ void main()
 			bool trainerHudVisible = !gamePaused &&
 				hudPlayerBallPosition.x >= aimTrainerMinX && hudPlayerBallPosition.x <= aimTrainerMaxX &&
 				hudPlayerBallPosition.z >= aimTrainerMinZ && hudPlayerBallPosition.z <= aimTrainerMaxZ;
-			if (trainerHudVisible)
+			if (trainerHudVisible && !twoBallsScenario && !sixBallsScenario)
 			{
 				const std::array<std::string, 3> scenarioLabels = {
 					!sixBallsScenario && !twoBallsScenario ? "> 1 THREE BALLS" : "  1 THREE BALLS",
@@ -2706,18 +2988,6 @@ void main()
 			if (leftPressed) wishDirection -= cameraRight;
 			if (rightPressed) wishDirection += cameraRight;
 			bool hasMovementInput = forwardPressed || backwardPressed || leftPressed || rightPressed;
-		if (mustCompleteScenarioBeforeLeaving)
-		{
-			glm::vec3 playerBallPosition = camera.Position - glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
-			if (playerBallPosition.x <= aimTrainerMinX && camera.horizontalVelocity.x < 0.0f)
-				camera.horizontalVelocity.x = 0.0f;
-			else if (playerBallPosition.x >= aimTrainerMaxX && camera.horizontalVelocity.x > 0.0f)
-				camera.horizontalVelocity.x = 0.0f;
-			if (playerBallPosition.z <= aimTrainerMinZ && camera.horizontalVelocity.z < 0.0f)
-				camera.horizontalVelocity.z = 0.0f;
-			else if (playerBallPosition.z >= aimTrainerMaxZ && camera.horizontalVelocity.z > 0.0f)
-				camera.horizontalVelocity.z = 0.0f;
-		}
 			if (!cameraOnGround && !hasMovementInput)
 				wishDirection = cameraForward;
 
@@ -2782,13 +3052,6 @@ void main()
 
 			glm::vec3 positionBeforeMovement = camera.Position;
 			camera.Position += camera.horizontalVelocity * step;
-			if (mustCompleteScenarioBeforeLeaving)
-			{
-				glm::vec3 playerBallPosition = camera.Position - glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
-				playerBallPosition.x = glm::clamp(playerBallPosition.x, aimTrainerMinX, aimTrainerMaxX);
-				playerBallPosition.z = glm::clamp(playerBallPosition.z, aimTrainerMinZ, aimTrainerMaxZ);
-				camera.Position = playerBallPosition + glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
-			}
 			resolveCameraBallCollisions();
 			jumpBufferRemaining = std::max(0.0f, jumpBufferRemaining - step);
 			physicsAccumulator -= step;

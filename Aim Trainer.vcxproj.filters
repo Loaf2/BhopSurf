@@ -77,6 +77,9 @@
     <ClInclude Include="auth_api_config.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="website_api_config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="default.frag">

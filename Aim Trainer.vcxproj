@@ -173,6 +173,7 @@
     <ClInclude Include="Texture.h" />
     <ClInclude Include="VAO.h" />
     <ClInclude Include="VBO.h" />
+    <ClInclude Include="website_api_config.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="AuthApi\.gitignore" />
