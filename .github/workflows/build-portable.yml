@@ -20,8 +20,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             package: linux-x86_64
-          - os: macos-13
-            package: macos-x86_64
+          - os: macos-latest
+            package: macos-arm64
 
     steps:
       - name: Check out source
@@ -115,7 +115,7 @@ jobs:
           LAUNCHER
           base64 -w 76 packages/AimTrainer-linux-x86_64.tar.gz >> "$launcher"
           printf '\n__LINUX_END__\n__MACOS_BEGIN__\n' >> "$launcher"
-          base64 -w 76 packages/AimTrainer-macos-x86_64.tar.gz >> "$launcher"
+          base64 -w 76 packages/AimTrainer-macos-arm64.tar.gz >> "$launcher"
           printf '\n__MACOS_END__\n' >> "$launcher"
           chmod +x "$launcher"
            tar -czf dist/AimTrainer-macos-linux.tar.gz -C dist AimTrainer-macos-linux.command
