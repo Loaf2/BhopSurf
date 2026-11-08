@@ -218,6 +218,11 @@ fs::path getActivationMarkerPath()
 	return getApplicationDataDirectory() / "activation.key";
 }
 
+fs::path getPlayerNamePath()
+{
+	return getApplicationDataDirectory() / "player_name.txt";
+}
+
 std::string loadSessionToken(const fs::path& tokenPath)
 {
 	std::ifstream input(tokenPath);
@@ -611,6 +616,15 @@ struct SignUpFormState
 
 SignUpFormState signUpForm;
 
+struct NameEditorState
+{
+	std::string text;
+	bool active = false;
+	bool submitRequested = false;
+};
+
+NameEditorState nameEditor;
+
 std::string& getFocusedSignUpText()
 {
 	if (signUpForm.activationMode)
@@ -624,6 +638,12 @@ std::string& getFocusedSignUpText()
 
 void signUpCharCallback(unsigned int codepoint)
 {
+	if (nameEditor.active)
+	{
+		if (codepoint >= 0x20 && codepoint <= 0x7e && nameEditor.text.size() < 32)
+			nameEditor.text.push_back(static_cast<char>(codepoint));
+		return;
+	}
 	if (!signUpForm.active || signUpForm.submitting || codepoint < 0x20 || codepoint > 0x7e)
 		return;
 
@@ -658,6 +678,20 @@ void signUpCharCallback(unsigned int codepoint)
 
 void signUpKeyCallback(platform::Key key, platform::KeyAction action)
 {
+	if (nameEditor.active)
+	{
+		if (action == platform::KeyAction::Press || action == platform::KeyAction::Repeat)
+		{
+			if (key == platform::Key::Backspace && !nameEditor.text.empty())
+				nameEditor.text.pop_back();
+			else if (key == platform::Key::Enter)
+			{
+				nameEditor.active = false;
+				nameEditor.submitRequested = true;
+			}
+		}
+		return;
+	}
 	if (!signUpForm.active || signUpForm.submitting || (action != platform::KeyAction::Press && action != platform::KeyAction::Repeat))
 		return;
 	const bool controlDown = platform::isKeyDown(platform::Key::Control);
@@ -927,9 +961,10 @@ bool sendRankScores(const std::string& sessionToken, int& aimBestScore, int& two
 		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore);
 }
 
-bool loadRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore)
+bool loadRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore, std::string& accountName)
 {
 	ApiResponse response = sendApiRequest("GET", "/api/ranks", {}, sessionToken);
+	accountName = getJsonStringValue(response.body, "accountName");
 	return response.received && response.statusCode == 200 &&
 		getJsonIntValue(response.body, "aimBestScore", aimBestScore) &&
 		getJsonIntValue(response.body, "twoBallsBestScore", twoBallsBestScore) &&
@@ -1908,14 +1943,18 @@ void main()
 	const std::string activatedEmail = loadSessionToken(activationMarkerPath);
 	const std::string accountEmail = loadSessionToken(getApplicationDataDirectory() / "account.email");
 	bool locallyActivated = !activatedEmail.empty() && activatedEmail == accountEmail;
+	std::string cloudAccountName;
+	std::string localPlayerName = loadSessionToken(getPlayerNamePath());
 	bool restoreAuthenticatedSession = false;
 	if (!authenticatedSessionToken.empty())
 	{
 		int remoteAimHighScore = 0;
 		int remoteTwoBallsHighScore = 0;
 		int remoteSixBallsHighScore = 0;
-		if (loadRankScores(authenticatedSessionToken, remoteAimHighScore, remoteTwoBallsHighScore, remoteSixBallsHighScore))
+		std::string remoteAccountName;
+		if (loadRankScores(authenticatedSessionToken, remoteAimHighScore, remoteTwoBallsHighScore, remoteSixBallsHighScore, remoteAccountName))
 		{
+			cloudAccountName = remoteAccountName;
 			aimHighScore = std::max(aimHighScore, remoteAimHighScore);
 			twoBallsHighScore = std::max(twoBallsHighScore, remoteTwoBallsHighScore);
 			sixBallsHighScore = std::max(sixBallsHighScore, remoteSixBallsHighScore);
@@ -2273,7 +2312,20 @@ void main()
 		bool pauseStateChanged = false;
 		bool rankMenuPage = gamePaused && (showingRanks || showingScenarioRanks);
 		bool controlsMenuPage = gamePaused && showingControls;
-		if (escapePressed && !previousEscape && !signUpForm.active)
+		if (nameEditor.submitRequested)
+		{
+			nameEditor.submitRequested = false;
+			localPlayerName = nameEditor.text;
+			if (localPlayerName.empty())
+				deleteSessionToken(getPlayerNamePath());
+			else
+				saveSessionToken(getPlayerNamePath(), localPlayerName);
+		}
+		if (escapePressed && !previousEscape && nameEditor.active)
+		{
+			nameEditor.active = false;
+		}
+		else if (escapePressed && !previousEscape && !signUpForm.active)
 		{
 			pauseStateChanged = true;
 			if (rankMenuPage || controlsMenuPage)
@@ -2516,6 +2568,19 @@ void main()
 						showingRanks = showingScenarioRanks = false;
 						pauseStateChanged = true;
 					}
+					else if (buttonHit("NAME", pauseTop + 104.0f * menuCellSize, 1.5f))
+					{
+						if (nameEditor.active)
+						{
+							nameEditor.active = false;
+						}
+						else
+						{
+							nameEditor.text = localPlayerName;
+							nameEditor.active = true;
+						}
+						pauseStateChanged = true;
+					}
 					else if (buttonHit("EXIT", pauseTop + 124.0f * menuCellSize, 1.5f))
 					{
 						platform::requestClose();
@@ -2728,6 +2793,9 @@ void main()
 					? "MAX RANK"
 					: "NEXT " + std::to_string(std::max(0, nextRankMinimumScore - scenarioHighScore));
 				appendCenteredRankText(progressText, fpsCellSize, static_cast<float>(framebufferHeight) * 0.25f + 12.0f * 4.5f * fpsCellSize);
+				const std::string displayedName = localPlayerName.empty() ? cloudAccountName : localPlayerName;
+				if (!displayedName.empty())
+					appendCenteredRankText(displayedName, fpsCellSize, static_cast<float>(framebufferHeight) * 0.09f);
 			}
 			if (signUpForm.active)
 			{
@@ -2832,6 +2900,7 @@ void main()
 				appendCenteredPauseText("CONTROLS", fpsCellSize * 1.5f, pauseTop + 40.0f * fpsCellSize);
 				appendCenteredPauseText("RANKS", fpsCellSize * 1.5f, pauseTop + 62.0f * fpsCellSize);
 				appendCenteredPauseText("SCENARIO RANKS", fpsCellSize * 1.5f, pauseTop + 84.0f * fpsCellSize);
+				appendCenteredPauseText(nameEditor.active ? "NAME " + nameEditor.text + "_" : std::string("NAME"), fpsCellSize * 1.5f, pauseTop + 104.0f * fpsCellSize);
 				appendCenteredPauseText("EXIT", fpsCellSize * 1.5f, pauseTop + 124.0f * fpsCellSize);
 			}
 			if (controlsMenuPage)
