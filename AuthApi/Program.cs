@@ -34,7 +34,8 @@ await using (var connection = await dataSource.OpenConnectionAsync())
             confirmation_expires_at_utc TIMESTAMPTZ NULL,
             aim_best_score INTEGER NOT NULL DEFAULT 0,
             two_balls_best_score INTEGER NOT NULL DEFAULT 0,
-            six_balls_best_score INTEGER NOT NULL DEFAULT 0
+            six_balls_best_score INTEGER NOT NULL DEFAULT 0,
+            tracking_best_score INTEGER NOT NULL DEFAULT 0
         );
         """, connection);
     await createTable.ExecuteNonQueryAsync();
@@ -44,7 +45,8 @@ await using (var connection = await dataSource.OpenConnectionAsync())
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS confirmation_expires_at_utc TIMESTAMPTZ NULL; " +
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS aim_best_score INTEGER NOT NULL DEFAULT 0; " +
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS two_balls_best_score INTEGER NOT NULL DEFAULT 0; " +
-        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS six_balls_best_score INTEGER NOT NULL DEFAULT 0;", connection);
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS six_balls_best_score INTEGER NOT NULL DEFAULT 0; " +
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tracking_best_score INTEGER NOT NULL DEFAULT 0;", connection);
     await migrateTable.ExecuteNonQueryAsync();
 
     await using var createSessions = new NpgsqlCommand(
@@ -208,17 +210,17 @@ app.MapGet("/api/ranks", async (HttpRequest request, CancellationToken cancellat
 
     await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
     await using var command = new NpgsqlCommand(
-        "SELECT aim_best_score, two_balls_best_score, six_balls_best_score FROM accounts WHERE id = @account_id;", connection);
+        "SELECT aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score FROM accounts WHERE id = @account_id;", connection);
     command.Parameters.AddWithValue("account_id", accountId.Value);
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     if (!await reader.ReadAsync(cancellationToken))
         return Results.Unauthorized();
-    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2)));
+    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3)));
 });
 
 app.MapPut("/api/ranks", async (RankScores scores, HttpRequest request, CancellationToken cancellationToken) =>
 {
-    if (scores.AimBestScore < 0 || scores.TwoBallsBestScore < 0 || scores.SixBallsBestScore < 0)
+    if (scores.AimBestScore < 0 || scores.TwoBallsBestScore < 0 || scores.SixBallsBestScore < 0 || scores.TrackingBestScore < 0)
         return Results.BadRequest(new { error = "Scores cannot be negative." });
 
     Guid? accountId = await GetSessionAccountIdAsync(request, dataSource, cancellationToken);
@@ -230,17 +232,19 @@ app.MapPut("/api/ranks", async (RankScores scores, HttpRequest request, Cancella
         "UPDATE accounts SET " +
         "aim_best_score = GREATEST(aim_best_score, @aim_best_score), " +
         "two_balls_best_score = GREATEST(two_balls_best_score, @two_balls_best_score), " +
-        "six_balls_best_score = GREATEST(six_balls_best_score, @six_balls_best_score) " +
+        "six_balls_best_score = GREATEST(six_balls_best_score, @six_balls_best_score), " +
+        "tracking_best_score = GREATEST(tracking_best_score, @tracking_best_score) " +
         "WHERE id = @account_id " +
-        "RETURNING aim_best_score, two_balls_best_score, six_balls_best_score;", connection);
+        "RETURNING aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score;", connection);
     command.Parameters.AddWithValue("aim_best_score", scores.AimBestScore);
     command.Parameters.AddWithValue("two_balls_best_score", scores.TwoBallsBestScore);
     command.Parameters.AddWithValue("six_balls_best_score", scores.SixBallsBestScore);
+    command.Parameters.AddWithValue("tracking_best_score", scores.TrackingBestScore);
     command.Parameters.AddWithValue("account_id", accountId.Value);
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     if (!await reader.ReadAsync(cancellationToken))
         return Results.Unauthorized();
-    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2)));
+    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3)));
 });
 
 app.Run();
@@ -365,7 +369,7 @@ static async Task<bool> SendConfirmationEmailAsync(
 
 sealed record AuthRequest(string? Email, string? Password);
 sealed record ResendConfirmationRequest(string? Email);
-sealed record RankScores(int AimBestScore, int TwoBallsBestScore, int SixBallsBestScore);
+sealed record RankScores(int AimBestScore, int TwoBallsBestScore, int SixBallsBestScore, int TrackingBestScore = 0);
 
 static class PasswordHashing
 {

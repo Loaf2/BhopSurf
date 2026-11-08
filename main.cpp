@@ -193,6 +193,11 @@ fs::path getSixBallsHighScorePath()
 	return getApplicationDataDirectory() / "six_balls_highscore.txt";
 }
 
+fs::path getTrackingHighScorePath()
+{
+	return getApplicationDataDirectory() / "tracking_highscore.txt";
+}
+
 fs::path getMouseSensitivityPath()
 {
 	return getApplicationDataDirectory() / "sensitivity.txt";
@@ -745,6 +750,7 @@ struct SignUpResult
 	int aimBestScore = 0;
 	int twoBallsBestScore = 0;
 	int sixBallsBestScore = 0;
+	int trackingBestScore = 0;
 };
 
 std::mutex signUpResultMutex;
@@ -949,26 +955,29 @@ bool getJsonIntValue(const std::string& json, const std::string& key, int& value
 	}
 }
 
-bool sendRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore)
+bool sendRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore, int& trackingBestScore)
 {
 	std::string body = "{\"aimBestScore\":" + std::to_string(aimBestScore) +
 		",\"twoBallsBestScore\":" + std::to_string(twoBallsBestScore) +
-		",\"sixBallsBestScore\":" + std::to_string(sixBallsBestScore) + "}";
+		",\"sixBallsBestScore\":" + std::to_string(sixBallsBestScore) +
+		",\"trackingBestScore\":" + std::to_string(trackingBestScore) + "}";
 	ApiResponse response = sendApiRequest("PUT", "/api/ranks", body, sessionToken);
 	return response.received && response.statusCode == 200 &&
 		getJsonIntValue(response.body, "aimBestScore", aimBestScore) &&
 		getJsonIntValue(response.body, "twoBallsBestScore", twoBallsBestScore) &&
-		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore);
+		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore) &&
+		getJsonIntValue(response.body, "trackingBestScore", trackingBestScore);
 }
 
-bool loadRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore, std::string& accountName)
+bool loadRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore, int& trackingBestScore, std::string& accountName)
 {
 	ApiResponse response = sendApiRequest("GET", "/api/ranks", {}, sessionToken);
 	accountName = getJsonStringValue(response.body, "accountName");
 	return response.received && response.statusCode == 200 &&
 		getJsonIntValue(response.body, "aimBestScore", aimBestScore) &&
 		getJsonIntValue(response.body, "twoBallsBestScore", twoBallsBestScore) &&
-		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore);
+		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore) &&
+		getJsonIntValue(response.body, "trackingBestScore", trackingBestScore);
 }
 
 std::string escapeJsonString(const std::string& value)
@@ -1932,6 +1941,7 @@ void main()
 	const fs::path aimHighScorePath = getAimHighScorePath();
 	const fs::path twoBallsHighScorePath = getTwoBallsHighScorePath();
 	const fs::path sixBallsHighScorePath = getSixBallsHighScorePath();
+	const fs::path trackingHighScorePath = getTrackingHighScorePath();
 	const fs::path sessionTokenPath = getSessionTokenPath();
 	const fs::path activationMarkerPath = getActivationMarkerPath();
 	constexpr double aimTaskRetryCooldownSeconds = 1.0;
@@ -1939,6 +1949,7 @@ void main()
 	int aimHighScore = loadAimHighScore(aimHighScorePath);
 	int twoBallsHighScore = loadAimHighScore(twoBallsHighScorePath);
 	int sixBallsHighScore = loadAimHighScore(sixBallsHighScorePath);
+	int trackingHighScore = loadAimHighScore(trackingHighScorePath);
 	std::string authenticatedSessionToken = loadSessionToken(sessionTokenPath);
 	const std::string activatedEmail = loadSessionToken(activationMarkerPath);
 	const std::string accountEmail = loadSessionToken(getApplicationDataDirectory() / "account.email");
@@ -1951,13 +1962,15 @@ void main()
 		int remoteAimHighScore = 0;
 		int remoteTwoBallsHighScore = 0;
 		int remoteSixBallsHighScore = 0;
+		int remoteTrackingHighScore = 0;
 		std::string remoteAccountName;
-		if (loadRankScores(authenticatedSessionToken, remoteAimHighScore, remoteTwoBallsHighScore, remoteSixBallsHighScore, remoteAccountName))
+		if (loadRankScores(authenticatedSessionToken, remoteAimHighScore, remoteTwoBallsHighScore, remoteSixBallsHighScore, remoteTrackingHighScore, remoteAccountName))
 		{
 			cloudAccountName = remoteAccountName;
 			aimHighScore = std::max(aimHighScore, remoteAimHighScore);
 			twoBallsHighScore = std::max(twoBallsHighScore, remoteTwoBallsHighScore);
 			sixBallsHighScore = std::max(sixBallsHighScore, remoteSixBallsHighScore);
+			trackingHighScore = std::max(trackingHighScore, remoteTrackingHighScore);
 			restoreAuthenticatedSession = true;
 		}
 		else
@@ -1969,6 +1982,12 @@ void main()
 	std::vector<std::thread> rankSyncThreads;
 	bool twoBallsScenario = false;
 	bool sixBallsScenario = false;
+	bool trackingScenario = false;
+	bool previousTrackingKey = false;
+	float trackingScoreAccumulator = 0.0f;
+	constexpr float trackingPointsPerSecond = 10.0f;
+	glm::vec3 trackingBallPosition(0.0f, ballGroundY + 4.0f, -26.0f);
+	constexpr float trackingBallSizeMultiplier = 1.0f;
 	struct AimRank
 	{
 		const char* name;
@@ -1991,8 +2010,8 @@ void main()
 	}};
 	auto getCurrentAimRank = [&]() -> const AimRank&
 	{
-		int scenarioHighScore = sixBallsScenario ? sixBallsHighScore :
-			(twoBallsScenario ? twoBallsHighScore : aimHighScore);
+		int scenarioHighScore = trackingScenario ? trackingHighScore : (sixBallsScenario ? sixBallsHighScore :
+			(twoBallsScenario ? twoBallsHighScore : aimHighScore));
 		const AimRank* rank = &aimRanks.front();
 		for (const AimRank& candidate : aimRanks)
 		{
@@ -2279,6 +2298,11 @@ void main()
 					{
 						sixBallsHighScore = completedSignUpResult.sixBallsBestScore;
 						saveAimHighScore(sixBallsHighScorePath, sixBallsHighScore);
+					}
+					if (completedSignUpResult.trackingBestScore > trackingHighScore)
+					{
+						trackingHighScore = completedSignUpResult.trackingBestScore;
+						saveAimHighScore(trackingHighScorePath, trackingHighScore);
 					}
 				}
 				if (signUpForm.email == website_api_config::ownerEmail)
@@ -2642,7 +2666,7 @@ void main()
 					try
 					{
 						 signUpAuthThread = std::thread([email = std::move(email), password = std::move(password), signIn,
-							 localAimBest = aimHighScore, localTwoBallsBest = twoBallsHighScore, localSixBallsBest = sixBallsHighScore]()
+							 localAimBest = aimHighScore, localTwoBallsBest = twoBallsHighScore, localSixBallsBest = sixBallsHighScore, localTrackingBest = trackingHighScore]()
 						{
 							SignUpResult requestResult = sendAuthApiRequest(email, password, signIn);
 							if (requestResult.authenticated && !requestResult.sessionToken.empty())
@@ -2650,8 +2674,9 @@ void main()
 								requestResult.aimBestScore = localAimBest;
 								requestResult.twoBallsBestScore = localTwoBallsBest;
 								requestResult.sixBallsBestScore = localSixBallsBest;
+								requestResult.trackingBestScore = localTrackingBest;
 								requestResult.ranksSynchronized = sendRankScores(requestResult.sessionToken,
-									requestResult.aimBestScore, requestResult.twoBallsBestScore, requestResult.sixBallsBestScore);
+									requestResult.aimBestScore, requestResult.twoBallsBestScore, requestResult.sixBallsBestScore, requestResult.trackingBestScore);
 							}
 							std::lock_guard<std::mutex> resultLock(signUpResultMutex);
 							signUpResult = std::move(requestResult);
@@ -2713,7 +2738,7 @@ void main()
 				aimTaskSecondsRemaining = static_cast<int>(std::ceil(std::max(0.0, aimTaskDurationSeconds - (aimTaskClockTime - aimTaskStartTime))));
 			aimTaskLabel = "T:" + std::to_string(aimTaskSecondsRemaining) +
 				" H:" + std::to_string(aimTaskScore) +
-			" B:" + std::to_string(sixBallsScenario ? sixBallsHighScore :
+			" B:" + std::to_string(trackingScenario ? trackingHighScore : sixBallsScenario ? sixBallsHighScore :
 				(twoBallsScenario ? twoBallsHighScore : aimHighScore));
 			aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 18.0f * fpsCellSize);
 			if (!signUpForm.active && !rankMenuPage && !controlsMenuPage)
@@ -2739,8 +2764,8 @@ void main()
 				}
 #endif
 			}
-			int scenarioHighScore = sixBallsScenario ? sixBallsHighScore :
-				(twoBallsScenario ? twoBallsHighScore : aimHighScore);
+			int scenarioHighScore = trackingScenario ? trackingHighScore : (sixBallsScenario ? sixBallsHighScore :
+				(twoBallsScenario ? twoBallsHighScore : aimHighScore));
 			int currentRankMinimumScore = getCurrentAimRank().minimumScore;
 			int nextRankMinimumScore = aimRanks.back().minimumScore;
 			if (currentRankMinimumScore < aimRanks.back().minimumScore)
@@ -2967,10 +2992,11 @@ void main()
 				hudPlayerBallPosition.z >= aimTrainerMinZ && hudPlayerBallPosition.z <= aimTrainerMaxZ;
 			if (trainerHudVisible)
 			{
-				const std::array<std::string, 3> scenarioLabels = {
-					!sixBallsScenario && !twoBallsScenario ? "> 1 THREE BALLS" : "  1 THREE BALLS",
+				const std::array<std::string, 4> scenarioLabels = {
+					!sixBallsScenario && !twoBallsScenario && !trackingScenario ? "> 1 THREE BALLS" : "  1 THREE BALLS",
 					twoBallsScenario ? "> 2 TWO BALLS" : "  2 TWO BALLS",
-					sixBallsScenario ? "> 3 SIX BALLS" : "  3 SIX BALLS"
+					sixBallsScenario ? "> 3 SIX BALLS" : "  3 SIX BALLS",
+					trackingScenario ? "> 4 TRACKING" : "  4 TRACKING"
 				};
 				float selectorCellSize = fpsCellSize;
 				float selectorTop = 16.0f + 24.0f * fpsCellSize;
@@ -3001,7 +3027,7 @@ void main()
 							cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f);
 						fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
 					};
-					appendCenteredScenarioText(sixBallsScenario ? "SIX BALLS" :
+					appendCenteredScenarioText(trackingScenario ? "TRACKING" : sixBallsScenario ? "SIX BALLS" :
 						(twoBallsScenario ? "TWO BALLS" : "THREE BALLS"), menuCellSize * 2.0f, static_cast<float>(framebufferHeight) * 0.28f);
 					appendCenteredScenarioText("HIGH SCORE", menuCellSize, static_cast<float>(framebufferHeight) * 0.38f);
 					std::string scenarioRankName = getCurrentAimRank().name;
@@ -3171,6 +3197,7 @@ void main()
 		bool twoBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num2);
 		bool threeBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num1);
 		bool sixBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num3);
+		bool trackingPressed = !gamePaused && platform::isKeyDown(platform::Key::Num4);
 		if (twoBallsPressed && !previousTwoBallsKey)		{
 			twoBallsScenario = true;
 			sixBallsScenario = false;
@@ -3196,7 +3223,18 @@ void main()
 		}
 		previousTwoBallsKey = twoBallsPressed;
 		previousThreeBallsKey = threeBallsPressed;
+		if (trackingPressed && !previousTrackingKey)
+		{
+			twoBallsScenario = false;
+			sixBallsScenario = false;
+			trackingScenario = true;
+			aimTaskRunning = false;
+			aimTaskFinished = false;
+			aimTaskScore = 0;
+			trackingScoreAccumulator = 0.0f;
+		}
 		previousSixBallsKey = sixBallsPressed;
+		previousTrackingKey = trackingPressed;
 
 		bool crosshairKeyPressed = platform::isKeyDown(platform::Key::C);
 		if (crosshairKeyPressed && !previousCrosshairKey)
@@ -3273,6 +3311,13 @@ void main()
 		}
 		if (!gamePaused)
 			wasAimTrainerActive = aimTrainerActive;
+		if (!gamePaused && aimTaskRunning && trackingScenario)
+		{
+			float trackingElapsed = static_cast<float>(aimTaskClockTime - aimTaskStartTime);
+			trackingBallPosition.x = 4.0f * std::sin(trackingElapsed * 0.9f) + 2.0f * std::sin(trackingElapsed * 0.37f);
+			trackingBallPosition.y = ballGroundY + 4.0f + 1.5f * std::sin(trackingElapsed * 0.6f + 1.0f);
+			trackingBallPosition.z = -26.0f;
+		}
 		if (!gamePaused && aimTaskRunning && twoBallsScenario)
 		{
 			for (std::size_t targetIndex = 0; targetIndex < twoBallTargets.size(); ++targetIndex)
@@ -3291,6 +3336,17 @@ void main()
 				}
 			}
 		}
+		if (!gamePaused && aimTaskRunning && trackingScenario && platform::isLeftMouseDown())
+		{
+			glm::vec3 rayOrigin = camera.Position;
+			glm::vec3 toBall = trackingBallPosition - rayOrigin;
+			glm::vec3 rayDirection = glm::normalize(camera.Orientation);
+			float alongRay = glm::dot(toBall, rayDirection);
+			float closestDistance = glm::length(toBall - rayDirection * alongRay);
+			if (alongRay > 0.0f && closestDistance <= aimTargetSize * 2.0f * trackingBallSizeMultiplier)
+				trackingScoreAccumulator += trackingPointsPerSecond * deltaTime;
+			aimTaskScore = static_cast<int>(trackingScoreAccumulator);
+		}
 		if (!gamePaused && aimTaskRunning && aimTaskClockTime - aimTaskStartTime >= aimTaskDurationSeconds)
 		{
 			aimTaskRunning = false;
@@ -3302,10 +3358,10 @@ void main()
 				completedTwoBallsOnce = true;
 			else
 				completedThreeBallsOnce = true;
-			int& scenarioHighScore = sixBallsScenario ? sixBallsHighScore :
-				(twoBallsScenario ? twoBallsHighScore : aimHighScore);
-			const fs::path& scenarioHighScorePath = sixBallsScenario ? sixBallsHighScorePath :
-				(twoBallsScenario ? twoBallsHighScorePath : aimHighScorePath);
+			int& scenarioHighScore = trackingScenario ? trackingHighScore : (sixBallsScenario ? sixBallsHighScore :
+				(twoBallsScenario ? twoBallsHighScore : aimHighScore));
+			const fs::path& scenarioHighScorePath = trackingScenario ? trackingHighScorePath : (sixBallsScenario ? sixBallsHighScorePath :
+				(twoBallsScenario ? twoBallsHighScorePath : aimHighScorePath));
 			if (aimTaskScore > scenarioHighScore)
 			{
 				scenarioHighScore = aimTaskScore;
@@ -3316,12 +3372,13 @@ void main()
 					int aimBestScore = aimHighScore;
 					int twoBallsBestScore = twoBallsHighScore;
 					int sixBallsBestScore = sixBallsHighScore;
+					int trackingBestScore = trackingHighScore;
 					try
 					{
 						rankSyncThreads.emplace_back([sessionToken = std::move(sessionToken), aimBestScore,
-							twoBallsBestScore, sixBallsBestScore]() mutable
+							twoBallsBestScore, sixBallsBestScore, trackingBestScore]() mutable
 						{
-							sendRankScores(sessionToken, aimBestScore, twoBallsBestScore, sixBallsBestScore);
+							sendRankScores(sessionToken, aimBestScore, twoBallsBestScore, sixBallsBestScore, trackingBestScore);
 						});
 					}
 					catch (const std::system_error&)
@@ -3361,35 +3418,45 @@ void main()
 				float selectorRowSpacing = 6.0f * selectorCellSize;
 				int clickedRow = static_cast<int>(std::round((clickY - selectorTop) / selectorRowSpacing));
 				float clickedRowTop = selectorTop + static_cast<float>(clickedRow) * selectorRowSpacing;
-				const std::array<std::string, 3> selectorLabels = {
-					"  1 THREE BALLS", "  2 TWO BALLS", "  3 SIX BALLS"
+				const std::array<std::string, 4> selectorLabels = {
+					"  1 THREE BALLS", "  2 TWO BALLS", "  3 SIX BALLS", "  4 TRACKING"
 				};
-				float rowLabelWidth = clickedRow >= 0 && clickedRow < 3
+				float rowLabelWidth = clickedRow >= 0 && clickedRow < 4
 					? static_cast<float>(selectorLabels[static_cast<std::size_t>(clickedRow)].size() * 4 - 1) * selectorCellSize
 					: 0.0f;
 				float rowLabelLeft = (static_cast<float>(selectorFramebufferWidth) - rowLabelWidth) * 0.5f;
-				if (clickedRow >= 0 && clickedRow < 3 &&
+				if (clickedRow >= 0 && clickedRow < 4 &&
 					clickY >= clickedRowTop - 5.0f * selectorCellSize &&
 					clickY <= clickedRowTop + selectorCellSize &&
 					clickX >= rowLabelLeft - 2.0f * selectorCellSize &&
 					clickX <= rowLabelLeft + rowLabelWidth + 2.0f * selectorCellSize)
 				{
-					if (clickedRow == 0 && (twoBallsScenario || sixBallsScenario))
+					if (clickedRow == 0 && (twoBallsScenario || sixBallsScenario || trackingScenario))
 					{
 						twoBallsScenario = false;
 						sixBallsScenario = false;
+						trackingScenario = false;
 						scenarioSelectorClicked = true;
 					}
 					else if (clickedRow == 1 && !twoBallsScenario)
 					{
 						twoBallsScenario = true;
 						sixBallsScenario = false;
+						trackingScenario = false;
 						scenarioSelectorClicked = true;
 					}
 					else if (clickedRow == 2 && !sixBallsScenario)
 					{
 						twoBallsScenario = false;
 						sixBallsScenario = true;
+						trackingScenario = false;
+						scenarioSelectorClicked = true;
+					}
+					else if (clickedRow == 3 && !trackingScenario)
+					{
+						twoBallsScenario = false;
+						sixBallsScenario = false;
+						trackingScenario = true;
 						scenarioSelectorClicked = true;
 					}
 					if (scenarioSelectorClicked)
@@ -3401,7 +3468,7 @@ void main()
 				}
 			}
 		}
-		if (!gamePaused && aimTrainerActive && aimTaskRunning && leftMousePressed && !previousLeftMouse)
+		if (!gamePaused && aimTrainerActive && aimTaskRunning && leftMousePressed && !previousLeftMouse && !trackingScenario)
 		{
 			if (!scenarioSelectorClicked)
 			{
@@ -3530,6 +3597,11 @@ void main()
 					orbModel.DrawWithTint(shaderProgram, camera, sixBallTargets[targetIndex],
 						glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(aimTargetSize * sixBallTargetSizeMultiplier));
 			}
+		}
+		else if (trackingScenario)
+		{
+			orbModel.DrawWithTint(shaderProgram, camera, trackingBallPosition,
+				glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(aimTargetSize * trackingBallSizeMultiplier));
 		}
 		else if (twoBallsScenario)
 		{

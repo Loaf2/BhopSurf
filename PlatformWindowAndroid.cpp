@@ -91,6 +91,7 @@ Key mapKeyCode(int32_t keyCode, bool& mapped)
 	case AKEYCODE_2: return Key::Num2;
 	case AKEYCODE_1: return Key::Num1;
 	case AKEYCODE_3: return Key::Num3;
+	case AKEYCODE_4: return Key::Num4;
 	case AKEYCODE_C: return Key::C;
 	case AKEYCODE_R: return Key::R;
 	default: mapped = false; return Key::Count;
