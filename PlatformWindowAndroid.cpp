@@ -14,6 +14,7 @@
 #include <ctime>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace platform
 {
@@ -26,8 +27,10 @@ EGLContext g_context = EGL_NO_CONTEXT;
 int g_width = 0;
 int g_height = 0;
 bool g_leftMouseDown = false;
-double g_cursorX = 0.0;
-double g_cursorY = 0.0;
+double g_pointerX = 0.0;
+double g_pointerY = 0.0;
+double g_lookX = 0.0;
+double g_lookY = 0.0;
 std::array<bool, static_cast<size_t>(Key::Count)> g_keys{};
 std::array<bool, static_cast<size_t>(Key::Count)> g_touchKeys{};
 bool g_touchShoot = false;
@@ -39,6 +42,11 @@ GLuint g_overlayVao = 0;
 GLuint g_overlayVbo = 0;
 TextCallback g_textCallback = nullptr;
 KeyCallback g_keyCallback = nullptr;
+enum class GuideLanguage { English, Spanish };
+bool g_guideOpen = true;
+bool g_guideLanguageChosen = false;
+bool g_scenarioMenuOpen = false;
+GuideLanguage g_guideLanguage = GuideLanguage::English;
 
 unsigned int mapTextCodepoint(int32_t keyCode)
 {
@@ -79,9 +87,12 @@ Key mapKeyCode(int32_t keyCode, bool& mapped)
 	case AKEYCODE_X: return Key::X;
 	case AKEYCODE_Z: return Key::Z;
 	case AKEYCODE_F: return Key::F;
+	case AKEYCODE_J: return Key::J;
 	case AKEYCODE_2: return Key::Num2;
 	case AKEYCODE_1: return Key::Num1;
 	case AKEYCODE_4: return Key::Num4;
+	case AKEYCODE_C: return Key::C;
+	case AKEYCODE_R: return Key::R;
 	default: mapped = false; return Key::Count;
 	}
 }
@@ -93,9 +104,10 @@ struct VirtualButton
 	float radius;
 	Key key;
 	bool shoot;
+	char label;
 };
 
-std::array<VirtualButton, 6> virtualButtons()
+std::array<VirtualButton, 7> virtualButtons()
 {
 	const float w = static_cast<float>(g_width);
 	const float h = static_cast<float>(g_height);
@@ -104,13 +116,67 @@ std::array<VirtualButton, 6> virtualButtons()
 	const float dpadX = w * 0.14f;
 	const float dpadY = h * 0.72f;
 	return {{
-		{ dpadX, dpadY - step, radius, Key::W, false },
-		{ dpadX - step, dpadY, radius, Key::A, false },
-		{ dpadX, dpadY + step, radius, Key::S, false },
-		{ dpadX + step, dpadY, radius, Key::D, false },
-		{ w * 0.78f, h * 0.72f, radius, Key::Space, false },
-		{ w * 0.90f, h * 0.72f, radius, Key::Count, true }
+		{ dpadX, dpadY - step, radius, Key::W, false, 'W' },
+		{ dpadX - step, dpadY, radius, Key::A, false, 'A' },
+		{ dpadX, dpadY + step, radius, Key::S, false, 'S' },
+		{ dpadX + step, dpadY, radius, Key::D, false, 'D' },
+		{ w * 0.78f, h * 0.72f, radius, Key::Space, false, 'O' },
+		{ w * 0.90f, h * 0.72f, radius, Key::Count, true, 'F' },
+		{ w * 0.90f, h * 0.50f, radius, Key::J, false, 'J' }
 	}};
+}
+
+std::vector<std::array<int, 4>> labelSegments(char label)
+{
+	switch (label)
+	{
+	case 'W': return {{0, 0, 0, 4}, {2, 0, 2, 4}, {0, 4, 1, 2}, {1, 2, 2, 4}};
+	case 'A': return {{0, 4, 0, 0}, {0, 0, 2, 0}, {2, 0, 2, 4}, {0, 2, 2, 2}};
+	case 'S': return {{2, 0, 0, 0}, {0, 0, 0, 2}, {0, 2, 2, 2}, {2, 2, 2, 4}, {2, 4, 0, 4}};
+	case 'D': return {{0, 0, 0, 4}, {0, 0, 1, 0}, {1, 0, 2, 1}, {2, 1, 2, 3}, {2, 3, 1, 4}, {1, 4, 0, 4}};
+	case 'J': return {{2, 0, 2, 4}, {2, 4, 0, 4}, {0, 4, 0, 3}};
+	case 'F': return {{0, 0, 0, 4}, {0, 0, 2, 0}, {0, 2, 2, 2}};
+	case 'O': return {{0, 0, 2, 0}, {2, 0, 2, 4}, {2, 4, 0, 4}, {0, 4, 0, 0}};
+	case 'B': return {{0, 0, 0, 4}, {0, 0, 2, 0}, {2, 0, 2, 2}, {0, 2, 2, 2}, {2, 2, 2, 4}, {2, 4, 0, 4}};
+	case 'C': return {{2, 0, 0, 0}, {0, 0, 0, 4}, {0, 4, 2, 4}};
+	case 'E': return {{2, 0, 0, 0}, {0, 0, 0, 4}, {0, 2, 2, 2}, {0, 4, 2, 4}};
+	case 'G': return {{2, 0, 0, 0}, {0, 0, 0, 4}, {0, 4, 2, 4}, {2, 4, 2, 2}, {2, 2, 1, 2}};
+	case 'H': return {{0, 0, 0, 4}, {2, 0, 2, 4}, {0, 2, 2, 2}};
+	case 'I': return {{1, 0, 1, 4}, {0, 0, 2, 0}, {0, 4, 2, 4}};
+	case 'K': return {{0, 0, 0, 4}, {2, 0, 0, 2}, {0, 2, 2, 4}};
+	case 'L': return {{0, 0, 0, 4}, {0, 4, 2, 4}};
+	case 'M': return {{0, 4, 0, 0}, {0, 0, 1, 2}, {1, 2, 2, 0}, {2, 0, 2, 4}};
+	case 'N': return {{0, 4, 0, 0}, {0, 0, 2, 4}, {2, 4, 2, 0}};
+	case 'P': return {{0, 4, 0, 0}, {0, 0, 2, 0}, {2, 0, 2, 2}, {2, 2, 0, 2}};
+	case 'Q': return {{0, 0, 2, 0}, {2, 0, 2, 4}, {2, 4, 0, 4}, {0, 4, 0, 0}, {1, 3, 2, 4}};
+	case 'R': return {{0, 4, 0, 0}, {0, 0, 2, 0}, {2, 0, 2, 2}, {2, 2, 0, 2}, {0, 2, 2, 4}};
+	case 'T': return {{0, 0, 2, 0}, {1, 0, 1, 4}};
+	case 'U': return {{0, 0, 0, 4}, {0, 4, 2, 4}, {2, 4, 2, 0}};
+	case 'V': return {{0, 0, 1, 4}, {1, 4, 2, 0}};
+	case 'X': return {{0, 0, 2, 4}, {2, 0, 0, 4}};
+	case 'Y': return {{0, 0, 1, 2}, {2, 0, 1, 2}, {1, 2, 1, 4}};
+	case 'Z': return {{0, 0, 2, 0}, {2, 0, 0, 4}, {0, 4, 2, 4}};
+	case '0': return {{0, 0, 2, 0}, {2, 0, 2, 4}, {2, 4, 0, 4}, {0, 4, 0, 0}};
+	case '1': return {{1, 0, 1, 4}};
+	case '2': return {{0, 0, 2, 0}, {2, 0, 2, 2}, {2, 2, 0, 2}, {0, 2, 0, 4}, {0, 4, 2, 4}};
+	case '3': return {{0, 0, 2, 0}, {2, 0, 2, 4}, {0, 2, 2, 2}, {0, 4, 2, 4}};
+	case '4': return {{0, 0, 0, 2}, {0, 2, 2, 2}, {2, 0, 2, 4}};
+	case '5': return {{2, 0, 0, 0}, {0, 0, 0, 2}, {0, 2, 2, 2}, {2, 2, 2, 4}, {2, 4, 0, 4}};
+	case '6': return {{2, 0, 0, 0}, {0, 0, 0, 4}, {0, 4, 2, 4}, {2, 4, 2, 2}, {2, 2, 0, 2}};
+	case '7': return {{0, 0, 2, 0}, {2, 0, 1, 4}};
+	case '8': return {{0, 0, 2, 0}, {2, 0, 2, 4}, {2, 4, 0, 4}, {0, 4, 0, 0}, {0, 2, 2, 2}};
+	case '9': return {{0, 2, 0, 0}, {0, 0, 2, 0}, {2, 0, 2, 4}, {0, 2, 2, 2}, {0, 4, 2, 4}};
+	case '-': return {{0, 2, 2, 2}};
+	case ':': return {{1, 1, 1, 1}, {1, 3, 1, 3}};
+	case '.': return {{1, 4, 1, 4}};
+	case '!': return {{1, 0, 1, 3}, {1, 4, 1, 4}};
+	case '?': return {{0, 0, 2, 0}, {2, 0, 2, 2}, {2, 2, 1, 2}, {1, 2, 1, 3}, {1, 4, 1, 4}};
+	case '+': return {{0, 2, 2, 2}, {1, 1, 1, 3}};
+	case '/': return {{2, 0, 0, 4}};
+	case '(': return {{1, 0, 0, 2}, {0, 2, 1, 4}};
+	case ')': return {{1, 0, 2, 2}, {2, 2, 1, 4}};
+	default: return {};
+	}
 }
 
 GLuint compileOverlayShader(GLenum type, const char* source)
@@ -153,6 +219,231 @@ void initOverlay()
 	glBindVertexArray(0);
 }
 
+void appendGuideText(std::vector<float>& lines, const std::string& text, float x, float y, float cell)
+{
+	float cursor = x;
+	for (const char c : text)
+	{
+		for (const std::array<int, 4>& segment : labelSegments(c))
+		{
+			lines.push_back(cursor + static_cast<float>(segment[0]) * cell);
+			lines.push_back(y + static_cast<float>(segment[1]) * cell);
+			lines.push_back(cursor + static_cast<float>(segment[2]) * cell);
+			lines.push_back(y + static_cast<float>(segment[3]) * cell);
+		}
+		cursor += 4.0f * cell;
+	}
+}
+
+void drawPixelLines(const std::vector<float>& lines, GLint colorLocation, float red, float green, float blue, float alpha)
+{
+	if (lines.empty())
+		return;
+	const float width = static_cast<float>(g_width);
+	const float height = static_cast<float>(g_height);
+	std::vector<float> ndc(lines.size());
+	for (std::size_t i = 0; i < lines.size(); i += 2)
+	{
+		ndc[i] = lines[i] / width * 2.0f - 1.0f;
+		ndc[i + 1] = 1.0f - lines[i + 1] / height * 2.0f;
+	}
+	glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(ndc.size() * sizeof(float)), ndc.data(), GL_DYNAMIC_DRAW);
+	glUniform4f(colorLocation, red, green, blue, alpha);
+	glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(ndc.size() / 2));
+}
+
+void appendCenteredText(std::vector<float>& lines, float centerX, float y, float cell, const std::string& text)
+{
+	const float textWidth = static_cast<float>(text.size()) * 4.0f * cell;
+	appendGuideText(lines, text, centerX - textWidth * 0.5f, y, cell);
+}
+
+struct GuideRect
+{
+	float x;
+	float y;
+	float w;
+	float h;
+
+	bool contains(float px, float py) const
+	{
+		return px >= x && px <= x + w && py >= y && py <= y + h;
+	}
+};
+
+struct GuideLayout
+{
+	GuideRect help;
+	GuideRect crosshair;
+	GuideRect ranks;
+	GuideRect scenario;
+	GuideRect scenarioAim;
+	GuideRect scenarioTwo;
+	GuideRect scenarioSix;
+	GuideRect english;
+	GuideRect spanish;
+	GuideRect close;
+	GuideRect language;
+	float cell;
+};
+
+GuideLayout guideLayout()
+{
+	const float w = static_cast<float>(g_width);
+	const float h = static_cast<float>(g_height);
+	const float cellByHeight = h * 0.016f;
+	const float cellByWidth = w / 220.0f;
+	GuideLayout layout{};
+	layout.cell = cellByHeight < cellByWidth ? cellByHeight : cellByWidth;
+	layout.help = { w * 0.86f, h * 0.04f, w * 0.12f, h * 0.12f };
+	layout.crosshair = { w * 0.86f, h * 0.18f, w * 0.12f, h * 0.08f };
+	layout.ranks = { w * 0.86f, h * 0.28f, w * 0.12f, h * 0.08f };
+	layout.scenario = { w * 0.80f, h * 0.38f, w * 0.18f, h * 0.08f };
+	layout.scenarioAim = { w * 0.60f, h * 0.38f, w * 0.18f, h * 0.07f };
+	layout.scenarioTwo = { w * 0.60f, h * 0.47f, w * 0.18f, h * 0.07f };
+	layout.scenarioSix = { w * 0.60f, h * 0.56f, w * 0.18f, h * 0.07f };
+	layout.english = { w * 0.15f, h * 0.45f, w * 0.30f, h * 0.20f };
+	layout.spanish = { w * 0.55f, h * 0.45f, w * 0.30f, h * 0.20f };
+	layout.close = { w * 0.35f, h * 0.80f, w * 0.12f, h * 0.12f };
+	layout.language = { w * 0.53f, h * 0.80f, w * 0.12f, h * 0.12f };
+	return layout;
+}
+
+std::string guideTitle(GuideLanguage language)
+{
+	return language == GuideLanguage::English ? "MOBILE GUIDE" : "GUIA MOVIL";
+}
+
+std::vector<std::string> guideBody(GuideLanguage language)
+{
+	if (language == GuideLanguage::English)
+		return {
+			"LEFT SIDE: W A S D TO MOVE",
+			"RIGHT SIDE: DRAG TO LOOK AROUND",
+			"O: JUMP",
+			"F: SHOOT",
+			"J: TELEPORT TO THE AIM AREA",
+			"TAP THE SCREEN TO SHOOT",
+			"CLOSE THIS GUIDE WITH THE CLOSE BUTTON",
+			"TAP HELP ANYTIME TO OPEN IT AGAIN"
+		};
+	return {
+		"LADO IZQUIERDO: W A S D PARA MOVER",
+		"LADO DERECHO: ARRASTRA PARA MIRAR",
+		"O: SALTAR",
+		"F: DISPARAR",
+		"J: TELETRANSPORTE A LA ZONA DE TIRO",
+		"TOCA LA PANTALLA PARA DISPARAR",
+		"CIERRA ESTA GUIA CON EL BOTON CERRAR",
+		"TOCA AYUDA EN CUALQUIER MOMENTO"
+	};
+}
+
+void drawPixelRect(float x, float y, float rectWidth, float rectHeight, GLint colorLocation, float red, float green, float blue, float alpha)
+{
+	const float width = static_cast<float>(g_width);
+	const float height = static_cast<float>(g_height);
+	const std::array<float, 8> corners = {
+		x / width * 2.0f - 1.0f, 1.0f - y / height * 2.0f,
+		(x + rectWidth) / width * 2.0f - 1.0f, 1.0f - y / height * 2.0f,
+		(x + rectWidth) / width * 2.0f - 1.0f, 1.0f - (y + rectHeight) / height * 2.0f,
+		x / width * 2.0f - 1.0f, 1.0f - (y + rectHeight) / height * 2.0f
+	};
+	glBufferData(GL_ARRAY_BUFFER, sizeof(corners), corners.data(), GL_DYNAMIC_DRAW);
+	glUniform4f(colorLocation, red, green, blue, alpha);
+	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+}
+
+void drawGuide(GLint colorLocation)
+{
+	const GuideLayout layout = guideLayout();
+	const float w = static_cast<float>(g_width);
+	const float h = static_cast<float>(g_height);
+	const float cell = layout.cell;
+	std::vector<float> text;
+
+	if (!g_guideOpen)
+	{
+		drawPixelRect(layout.help.x, layout.help.y, layout.help.w, layout.help.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.3f);
+		appendCenteredText(text, layout.help.x + layout.help.w * 0.5f, layout.help.y + layout.help.h * 0.5f - 2.0f * cell, cell, "HELP");
+		drawPixelRect(layout.crosshair.x, layout.crosshair.y, layout.crosshair.w, layout.crosshair.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.3f);
+		appendCenteredText(text, layout.crosshair.x + layout.crosshair.w * 0.5f, layout.crosshair.y + layout.crosshair.h * 0.5f - 2.0f * cell, cell, "CROSS");
+		drawPixelRect(layout.ranks.x, layout.ranks.y, layout.ranks.w, layout.ranks.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.3f);
+		appendCenteredText(text, layout.ranks.x + layout.ranks.w * 0.5f, layout.ranks.y + layout.ranks.h * 0.5f - 2.0f * cell, cell, "RANKS");
+		drawPixelRect(layout.scenario.x, layout.scenario.y, layout.scenario.w, layout.scenario.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.3f);
+		appendCenteredText(text, layout.scenario.x + layout.scenario.w * 0.5f, layout.scenario.y + layout.scenario.h * 0.5f - 2.0f * cell, cell, "SCENARIO");
+		if (g_scenarioMenuOpen)
+		{
+			drawPixelRect(layout.scenarioAim.x, layout.scenarioAim.y, layout.scenarioAim.w, layout.scenarioAim.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.3f);
+			appendCenteredText(text, layout.scenarioAim.x + layout.scenarioAim.w * 0.5f, layout.scenarioAim.y + layout.scenarioAim.h * 0.5f - 2.0f * cell, cell, "AIM");
+			drawPixelRect(layout.scenarioTwo.x, layout.scenarioTwo.y, layout.scenarioTwo.w, layout.scenarioTwo.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.3f);
+			appendCenteredText(text, layout.scenarioTwo.x + layout.scenarioTwo.w * 0.5f, layout.scenarioTwo.y + layout.scenarioTwo.h * 0.5f - 2.0f * cell, cell, "2 BALLS");
+			drawPixelRect(layout.scenarioSix.x, layout.scenarioSix.y, layout.scenarioSix.w, layout.scenarioSix.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.3f);
+			appendCenteredText(text, layout.scenarioSix.x + layout.scenarioSix.w * 0.5f, layout.scenarioSix.y + layout.scenarioSix.h * 0.5f - 2.0f * cell, cell, "6 BALLS");
+		}
+		drawPixelLines(text, colorLocation, 1.0f, 1.0f, 1.0f, 1.0f);
+		return;
+	}
+
+	drawPixelRect(0.0f, 0.0f, w, h, colorLocation, 0.0f, 0.0f, 0.0f, 0.85f);
+	if (!g_guideLanguageChosen)
+	{
+		drawPixelRect(layout.english.x, layout.english.y, layout.english.w, layout.english.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.25f);
+		drawPixelRect(layout.spanish.x, layout.spanish.y, layout.spanish.w, layout.spanish.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.25f);
+		appendCenteredText(text, w * 0.5f, h * 0.20f, cell, "CHOOSE LANGUAGE");
+		appendCenteredText(text, w * 0.5f, h * 0.30f, cell, "ELIJE IDIOMA");
+		appendCenteredText(text, layout.english.x + layout.english.w * 0.5f, layout.english.y + layout.english.h * 0.5f - 2.0f * cell, cell, "ENGLISH");
+		appendCenteredText(text, layout.spanish.x + layout.spanish.w * 0.5f, layout.spanish.y + layout.spanish.h * 0.5f - 2.0f * cell, cell, "ESPANOL");
+	}
+	else
+	{
+		drawPixelRect(layout.close.x, layout.close.y, layout.close.w, layout.close.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.25f);
+		drawPixelRect(layout.language.x, layout.language.y, layout.language.w, layout.language.h, colorLocation, 1.0f, 1.0f, 1.0f, 0.25f);
+		appendCenteredText(text, w * 0.5f, h * 0.08f, cell, guideTitle(g_guideLanguage));
+		const std::vector<std::string> lines = guideBody(g_guideLanguage);
+		for (std::size_t i = 0; i < lines.size(); ++i)
+			appendGuideText(text, lines[i], w * 0.08f, h * 0.20f + static_cast<float>(i) * cell * 7.0f, cell);
+		appendCenteredText(text, layout.close.x + layout.close.w * 0.5f, layout.close.y + layout.close.h * 0.5f - 2.0f * cell, cell, "CLOSE");
+		appendCenteredText(text, layout.language.x + layout.language.w * 0.5f, layout.language.y + layout.language.h * 0.5f - 2.0f * cell, cell, "LANG");
+	}
+	drawPixelLines(text, colorLocation, 1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+bool handleGuideTap(float x, float y)
+{
+	const GuideLayout layout = guideLayout();
+	if (!g_guideOpen)
+	{
+		if (!layout.help.contains(x, y))
+			return false;
+		g_guideOpen = true;
+		return true;
+	}
+
+	if (!g_guideLanguageChosen)
+	{
+		if (layout.english.contains(x, y))
+		{
+			g_guideLanguage = GuideLanguage::English;
+			g_guideLanguageChosen = true;
+		}
+		else if (layout.spanish.contains(x, y))
+		{
+			g_guideLanguage = GuideLanguage::Spanish;
+			g_guideLanguageChosen = true;
+		}
+	}
+	else if (layout.close.contains(x, y))
+	{
+		g_guideOpen = false;
+	}
+	else if (layout.language.contains(x, y))
+	{
+		g_guideLanguageChosen = false;
+	}
+	return true;
+}
+
 void drawTouchControls()
 {
 	if (g_width <= 0 || g_height <= 0)
@@ -182,12 +473,15 @@ void drawTouchControls()
 	glBindVertexArray(g_overlayVao);
 	glBindBuffer(GL_ARRAY_BUFFER, g_overlayVbo);
 	const GLint colorLocation = glGetUniformLocation(g_overlayProgram, "color");
+	drawGuide(colorLocation);
 
 	constexpr int segments = 32;
 	constexpr float pi = 3.14159265f;
 	std::array<float, (segments + 2) * 2> vertices{};
 	for (const VirtualButton& button : virtualButtons())
 	{
+		if (g_guideOpen)
+			break;
 		const bool pressed = button.shoot ? g_touchShoot : g_touchKeys[static_cast<size_t>(button.key)];
 		vertices[0] = toNdcX(button.x);
 		vertices[1] = toNdcY(button.y);
@@ -203,6 +497,27 @@ void drawTouchControls()
 		else
 			glUniform4f(colorLocation, 1.0f, 1.0f, 1.0f, 0.25f);
 		glDrawArrays(GL_TRIANGLE_FAN, 0, segments + 2);
+
+		const float cell = button.radius * 0.2f;
+		std::vector<float> labelVertices;
+		for (const std::array<int, 4>& segment : labelSegments(button.label))
+		{
+			labelVertices.push_back(button.x + static_cast<float>(segment[0] - 1) * cell);
+			labelVertices.push_back(button.y + static_cast<float>(segment[1] - 2) * cell);
+			labelVertices.push_back(button.x + static_cast<float>(segment[2] - 1) * cell);
+			labelVertices.push_back(button.y + static_cast<float>(segment[3] - 2) * cell);
+		}
+		for (std::size_t i = 0; i < labelVertices.size(); i += 2)
+		{
+			labelVertices[i] = toNdcX(labelVertices[i]);
+			labelVertices[i + 1] = toNdcY(labelVertices[i + 1]);
+		}
+		if (!labelVertices.empty())
+		{
+			glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(labelVertices.size() * sizeof(float)), labelVertices.data(), GL_DYNAMIC_DRAW);
+			glUniform4f(colorLocation, 1.0f, 1.0f, 1.0f, pressed ? 1.0f : 0.8f);
+			glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(labelVertices.size() / 2));
+		}
 	}
 
 	glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(previousBuffer));
@@ -325,17 +640,63 @@ int32_t handleInputEvent(android_app*, AInputEvent* event)
 		if (allReleased || (action == AMOTION_EVENT_ACTION_POINTER_UP && AMotionEvent_getPointerId(event, liftedIndex) == g_lookPointerId))
 			g_lookPointerId = -1;
 
+		if (isDown && handleGuideTap(AMotionEvent_getX(event, liftedIndex), AMotionEvent_getY(event, liftedIndex)))
+			return 1;
+		if (g_guideOpen)
+		{
+			g_touchKeys = {};
+			g_touchShoot = false;
+			g_leftMouseDown = false;
+			g_lookPointerId = -1;
+			return 1;
+		}
+
 		std::array<bool, static_cast<size_t>(Key::Count)> touchKeys{};
 		bool shootDown = false;
 		bool tapDown = false;
 		const auto buttons = virtualButtons();
 		const size_t pointerCount = AMotionEvent_getPointerCount(event);
+		const GuideLayout layout = guideLayout();
 		for (size_t i = 0; i < pointerCount && !allReleased; ++i)
 		{
 			if (action == AMOTION_EVENT_ACTION_POINTER_UP && i == liftedIndex)
 				continue;
 			const float x = AMotionEvent_getX(event, i);
 			const float y = AMotionEvent_getY(event, i);
+			if (layout.crosshair.contains(x, y))
+			{
+				touchKeys[static_cast<size_t>(Key::C)] = true;
+				continue;
+			}
+			if (layout.ranks.contains(x, y))
+			{
+				touchKeys[static_cast<size_t>(Key::R)] = true;
+				continue;
+			}
+			if (g_scenarioMenuOpen && layout.scenarioAim.contains(x, y))
+			{
+				touchKeys[static_cast<size_t>(Key::Num1)] = true;
+				g_scenarioMenuOpen = false;
+				continue;
+			}
+			if (g_scenarioMenuOpen && layout.scenarioTwo.contains(x, y))
+			{
+				touchKeys[static_cast<size_t>(Key::Num2)] = true;
+				g_scenarioMenuOpen = false;
+				continue;
+			}
+			if (g_scenarioMenuOpen && layout.scenarioSix.contains(x, y))
+			{
+				touchKeys[static_cast<size_t>(Key::Num4)] = true;
+				g_scenarioMenuOpen = false;
+				continue;
+			}
+			if (layout.scenario.contains(x, y))
+			{
+				if (isDown && i == liftedIndex)
+					g_scenarioMenuOpen = !g_scenarioMenuOpen;
+				continue;
+			}
 			bool hitButton = false;
 			for (const VirtualButton& button : buttons)
 			{
@@ -354,8 +715,8 @@ int32_t handleInputEvent(android_app*, AInputEvent* event)
 			const int32_t pointerId = AMotionEvent_getPointerId(event, i);
 			if (pointerId == g_lookPointerId)
 			{
-				g_cursorX += x - g_lastLookX;
-				g_cursorY += y - g_lastLookY;
+				g_lookX += x - g_lastLookX;
+				g_lookY += y - g_lastLookY;
 				g_lastLookX = x;
 				g_lastLookY = y;
 			}
@@ -368,8 +729,8 @@ int32_t handleInputEvent(android_app*, AInputEvent* event)
 			else
 			{
 				tapDown = true;
-				g_cursorX = x;
-				g_cursorY = y;
+				g_pointerX = x;
+				g_pointerY = y;
 			}
 		}
 
@@ -503,8 +864,14 @@ bool isLeftMouseDown()
 
 void getCursorPosition(double& x, double& y)
 {
-	x = g_cursorX;
-	y = g_cursorY;
+	x = g_pointerX;
+	y = g_pointerY;
+}
+
+void getLookPosition(double& x, double& y)
+{
+	x = g_lookX;
+	y = g_lookY;
 }
 
 void getFramebufferSize(int& width, int& height)

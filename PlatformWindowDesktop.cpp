@@ -45,6 +45,9 @@ int toGlfwKey(Key key)
 	case Key::X: return GLFW_KEY_X;
 	case Key::Z: return GLFW_KEY_Z;
 	case Key::F: return GLFW_KEY_F;
+	case Key::J: return GLFW_KEY_J;
+	case Key::C: return GLFW_KEY_C;
+	case Key::R: return GLFW_KEY_R;
 	case Key::Num2: return GLFW_KEY_2;
 	case Key::Num1: return GLFW_KEY_1;
 	case Key::Num4: return GLFW_KEY_4;
@@ -74,6 +77,9 @@ Key fromGlfwKey(int key, bool& recognized)
 	case GLFW_KEY_X: return Key::X;
 	case GLFW_KEY_Z: return Key::Z;
 	case GLFW_KEY_F: return Key::F;
+	case GLFW_KEY_J: return Key::J;
+	case GLFW_KEY_C: return Key::C;
+	case GLFW_KEY_R: return Key::R;
 	case GLFW_KEY_2: return Key::Num2;
 	case GLFW_KEY_1: return Key::Num1;
 	case GLFW_KEY_4: return Key::Num4;
@@ -242,6 +248,11 @@ void getCursorPosition(double& x, double& y)
 {
 	if (g_window != nullptr)
 		glfwGetCursorPos(g_window, &x, &y);
+}
+
+void getLookPosition(double& x, double& y)
+{
+	getCursorPosition(x, y);
 }
 
 void getFramebufferSize(int& width, int& height)

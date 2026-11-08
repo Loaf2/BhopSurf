@@ -40,7 +40,7 @@ void Camera::Inputs(bool allowMovement)
 
 	double mouseX = 0.0;
 	double mouseY = 0.0;
-	platform::getCursorPosition(mouseX, mouseY);
+	platform::getLookPosition(mouseX, mouseY);
 
 	if (!mouseInitialized)
 	{

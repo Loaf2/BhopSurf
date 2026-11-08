@@ -26,9 +26,12 @@ enum class Key
 	X,
 	Z,
 	F,
+	J,
 	Num1,
 	Num2,
 	Num4,
+	C,
+	R,
 	Count
 };
 
@@ -63,6 +66,7 @@ void pollEvents();
 bool isKeyDown(Key key);
 bool isLeftMouseDown();
 void getCursorPosition(double& x, double& y);
+void getLookPosition(double& x, double& y);
 void getFramebufferSize(int& width, int& height);
 void setCursorCaptured(bool captured);
 double getTime();
