@@ -604,7 +604,6 @@ struct SignUpFormState
 	bool submitting = false;
 	bool complete = false;
 	bool showPassword = false;
-	bool resendRequested = false;
 	bool emailConfirmationPending = false;
 	bool activationMode = false;
 	std::string activationKey;
@@ -954,7 +953,7 @@ std::string escapeJsonString(const std::string& value)
 	return escaped;
 }
 
-SignUpResult sendAuthApiRequest(const std::string& email, const std::string& password, bool signIn, bool resendConfirmation = false)
+SignUpResult sendAuthApiRequest(const std::string& email, const std::string& password, bool signIn)
 {
 	SignUpResult result;
 	if (!isAuthApiConfigured())
@@ -964,11 +963,9 @@ SignUpResult sendAuthApiRequest(const std::string& email, const std::string& pas
 	}
 
 	std::string body = "{\"email\":\"" + escapeJsonString(email) + "\"";
-	if (!resendConfirmation)
-		body += ",\"password\":\"" + escapeJsonString(password) + "\"";
+	body += ",\"password\":\"" + escapeJsonString(password) + "\"";
 	body += "}";
-	std::string requestPath = resendConfirmation ? "/api/auth/resend-confirmation" :
-		(signIn ? "/api/auth/login" : "/api/auth/register");
+	std::string requestPath = signIn ? "/api/auth/login" : "/api/auth/register";
 	ApiResponse response = sendApiRequest("POST", requestPath, body);
 	if (!response.received)
 	{
@@ -983,7 +980,7 @@ SignUpResult sendAuthApiRequest(const std::string& email, const std::string& pas
 		if (response.statusCode == 202)
 		{
 			result.confirmationPending = true;
-			result.message = resendConfirmation ? "CHECK EMAIL IF UNCONFIRMED" : confirmationSuccessMessage;
+			result.message = confirmationSuccessMessage;
 		}
 		else
 		{
@@ -2439,11 +2436,6 @@ void main()
 						else if (clickX >= formCenterX - 40.0f * menuCellSize && clickX <= formCenterX + 40.0f * menuCellSize &&
 							clickY >= passwordLabelTop + 13.0f * menuCellSize && clickY <= passwordLabelTop + 20.0f * menuCellSize)
 							signUpForm.showPassword = !signUpForm.showPassword;
-						else if (signUpForm.emailConfirmationPending &&
-							clickX >= formCenterX - 90.0f * menuCellSize && clickX <= formCenterX + 90.0f * menuCellSize &&
-							clickY >= static_cast<float>(clickFramebufferHeight) * 0.83f - 5.0f * menuCellSize &&
-							clickY <= static_cast<float>(clickFramebufferHeight) * 0.83f + 12.0f * menuCellSize)
-							signUpForm.resendRequested = true;
 						else if (clickX >= formCenterX - 40.0f * menuCellSize && clickX <= formCenterX + 40.0f * menuCellSize &&
 							clickY >= static_cast<float>(clickFramebufferHeight) * 0.67f - 5.0f * menuCellSize &&
 							clickY <= static_cast<float>(clickFramebufferHeight) * 0.67f + 12.0f * menuCellSize)
@@ -2531,11 +2523,9 @@ void main()
 				}
 			}
 		}
-		if (signUpForm.active && (signUpForm.submitRequested || signUpForm.resendRequested) && !signUpForm.submitting)
+		if (signUpForm.active && signUpForm.submitRequested && !signUpForm.submitting)
 		{
-			bool resendConfirmation = signUpForm.resendRequested;
 			signUpForm.submitRequested = false;
-			signUpForm.resendRequested = false;
 			if (signUpForm.activationMode)
 			{
 				bool validFormat = signUpForm.activationKey.size() == 43 && signUpForm.activationKey.starts_with("AIM-");
@@ -2562,26 +2552,22 @@ void main()
 			}
 			else if (!isAuthApiConfigured())
 				signUpForm.status = "SET API URL";
-			else if (resendConfirmation && signUpForm.email.empty())
-				signUpForm.status = "ENTER YOUR EMAIL";
 			else
 			{
 				std::size_t atPosition = signUpForm.email.find('@');
 				std::size_t dotPosition = signUpForm.email.find('.', atPosition == std::string::npos ? 0 : atPosition);
-				if (!resendConfirmation && (atPosition == std::string::npos || atPosition == 0 || dotPosition == std::string::npos ||
-					dotPosition <= atPosition + 1 || dotPosition + 1 >= signUpForm.email.size()))
+				if (atPosition == std::string::npos || atPosition == 0 || dotPosition == std::string::npos ||
+					dotPosition <= atPosition + 1 || dotPosition + 1 >= signUpForm.email.size())
 					signUpForm.status = "INVALID EMAIL";
-				else if (!resendConfirmation && signUpForm.password.size() < 6)
+				else if (signUpForm.password.size() < 6)
 					signUpForm.status = "PASSWORD TOO SHORT";
-				else if (!resendConfirmation && !signUpForm.signInMode && signUpForm.password != signUpForm.confirmPassword)
+				else if (!signUpForm.signInMode && signUpForm.password != signUpForm.confirmPassword)
 					signUpForm.status = "PASSWORDS DO NOT MATCH";
 				else
 				{
 					std::string email = signUpForm.email;
 					std::string password = signUpForm.password;
 					bool signIn = signUpForm.signInMode;
-					if (resendConfirmation)
-						signIn = false;
 					signUpForm.status.clear();
 					signUpForm.submitting = true;
 					{
@@ -2590,10 +2576,10 @@ void main()
 					}
 					try
 					{
-						 signUpAuthThread = std::thread([email = std::move(email), password = std::move(password), signIn, resendConfirmation,
-							localAimBest = aimHighScore, localTwoBallsBest = twoBallsHighScore, localSixBallsBest = sixBallsHighScore]()
+						 signUpAuthThread = std::thread([email = std::move(email), password = std::move(password), signIn,
+							 localAimBest = aimHighScore, localTwoBallsBest = twoBallsHighScore, localSixBallsBest = sixBallsHighScore]()
 						{
-							SignUpResult requestResult = sendAuthApiRequest(email, password, signIn, resendConfirmation);
+							SignUpResult requestResult = sendAuthApiRequest(email, password, signIn);
 							if (requestResult.authenticated && !requestResult.sessionToken.empty())
 							{
 								requestResult.aimBestScore = localAimBest;
@@ -2818,7 +2804,6 @@ void main()
 					static_cast<float>(framebufferHeight) * 0.75f);
 				if (signUpForm.emailConfirmationPending)
 				{
-					appendCenteredSignUpText("CLICK TO RESEND EMAIL", static_cast<float>(framebufferHeight) * 0.83f);
 					if (!signUpForm.status.empty())
 						appendCenteredSignUpText(signUpForm.status, static_cast<float>(framebufferHeight) * 0.89f);
 				}
