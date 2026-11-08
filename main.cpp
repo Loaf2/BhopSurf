@@ -1244,15 +1244,6 @@ namespace platform
 void setAndroidApp(android_app* app);
 }
 
-#ifdef __ANDROID__
-void showAndroidDiagnosticColor(float red, float green, float blue)
-{
-	glClearColor(red, green, blue, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT);
-	platform::swapBuffers();
-}
-#endif
-
 extern "C" void android_main(android_app* app)
 {
 	platform::setAndroidApp(app);
@@ -1284,24 +1275,15 @@ int runApplication()
 	if (!gladLoadGLES2(reinterpret_cast<GLADloadfunc>(platform::getProcAddress)))
 	{
 		std::cerr << "Failed to load OpenGL functions" << std::endl;
-#ifdef __ANDROID__
-		showAndroidDiagnosticColor(0.0f, 0.0f, 1.0f);
-#endif
 		platform::destroyWindow();
 		return -1;
 	}
-#ifdef __ANDROID__
-	showAndroidDiagnosticColor(0.0f, 1.0f, 0.0f);
-#endif
 #endif
 	int framebufferWidth = 0;
 	int framebufferHeight = 0;
 	platform::getFramebufferSize(framebufferWidth, framebufferHeight);
 	glViewport(0, 0, framebufferWidth, framebufferHeight);
 	glEnable(GL_PROGRAM_POINT_SIZE);
-#ifdef __ANDROID__
-	showAndroidDiagnosticColor(1.0f, 0.5f, 0.0f);
-#endif
 
 	const char* crosshairVertexSource = "#version " AIMTRAINER_GLSL_VERSION "\nlayout(location = 0) in vec2 position;\nuniform float aspectRatio;\nuniform float pointSize;\nvoid main() { gl_Position = vec4(position.x / aspectRatio, position.y, 0.0, 1.0); gl_PointSize = pointSize; }";
 	const char* crosshairFragmentSource = "#version " AIMTRAINER_GLSL_VERSION "\nprecision mediump float;\nout vec4 FragColor;\nuniform vec4 crosshairColor;\nvoid main() { FragColor = crosshairColor; }";
@@ -1450,9 +1432,6 @@ void main()
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(GLfloat), nullptr);
 	glEnableVertexAttribArray(0);
 	glBindVertexArray(0);
-#ifdef __ANDROID__
-	showAndroidDiagnosticColor(1.0f, 1.0f, 0.5f);
-#endif
 
 	const char* shadowVertexSource = "#version " AIMTRAINER_GLSL_VERSION "\nlayout(location = 0) in vec2 position;\nuniform mat4 camMatrix;\nuniform vec2 shadowCenter;\nuniform vec2 shadowRadius;\nuniform float shadowHeight;\nout vec2 shadowCoord;\nvoid main() { shadowCoord = position; vec3 worldPos = vec3(shadowCenter.x + position.x * shadowRadius.x, shadowHeight, shadowCenter.y + position.y * shadowRadius.y); gl_Position = camMatrix * vec4(worldPos, 1.0); }";
 	const char* shadowFragmentSource = "#version " AIMTRAINER_GLSL_VERSION "\nprecision mediump float;\nin vec2 shadowCoord;\nuniform float shadowOpacity;\nout vec4 FragColor;\nvoid main() { float r = length(shadowCoord); float alpha = (1.0 - smoothstep(0.35, 1.0, r)) * shadowOpacity; if (alpha < 0.01) discard; FragColor = vec4(0.015, 0.025, 0.035, alpha); }";
@@ -1481,18 +1460,30 @@ void main()
 	glEnableVertexAttribArray(0);
 	glBindVertexArray(0);
 
-	const GLfloat crosshairVertices[] =
-	{
+	std::vector<GLfloat> crosshairVertices = {
 		-0.012f, 0.0f, 0.012f, 0.0f,
-		0.0f, -0.012f, 0.0f, 0.012f
+		0.0f, -0.012f, 0.0f, 0.012f,
+		0.0f, 0.0f
 	};
+	for (int i = 0; i < 24; ++i)
+	{
+		const float angle = 2.0f * 3.14159265f * static_cast<float>(i) / 24.0f;
+		crosshairVertices.push_back(0.010f * std::cos(angle));
+		crosshairVertices.push_back(0.010f * std::sin(angle));
+	}
+	crosshairVertices.insert(crosshairVertices.end(), {
+		-0.012f, 0.0f, -0.004f, 0.0f,
+		0.004f, 0.0f, 0.012f, 0.0f,
+		0.0f, -0.012f, 0.0f, -0.004f,
+		0.0f, 0.004f, 0.0f, 0.012f
+	});
 	GLuint crosshairVAO = 0;
 	GLuint crosshairVBO = 0;
 	glGenVertexArrays(1, &crosshairVAO);
 	glGenBuffers(1, &crosshairVBO);
 	glBindVertexArray(crosshairVAO);
 	glBindBuffer(GL_ARRAY_BUFFER, crosshairVBO);
-	glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(sizeof(crosshairVertices)), crosshairVertices, GL_STATIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(crosshairVertices.size() * sizeof(GLfloat)), crosshairVertices.data(), GL_STATIC_DRAW);
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(GLfloat), nullptr);
 	glEnableVertexAttribArray(0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -1507,9 +1498,6 @@ void main()
 	glEnableVertexAttribArray(0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glBindVertexArray(0);
-#ifdef __ANDROID__
-	showAndroidDiagnosticColor(0.0f, 1.0f, 0.5f);
-#endif
 
 	fs::path executablePath;
 #ifdef _WIN32
@@ -1589,7 +1577,6 @@ void main()
 	assetRoot = platform::extractAndroidAssets();
 	if (assetRoot.empty())
 	{
-		showAndroidDiagnosticColor(1.0f, 0.0f, 0.0f);
 		return -1;
 	}
 #else
@@ -1641,21 +1628,14 @@ void main()
 		}
 	}
 
-	#ifdef __ANDROID__
-			showAndroidDiagnosticColor(0.5f, 1.0f, 0.0f);
-		#endif
 			std::string vertexShaderPath = (assetRoot / "default.vert").string();
 	std::string fragmentShaderPath = (assetRoot / "default.frag").string();
-	#ifdef __ANDROID__
-		showAndroidDiagnosticColor(1.0f, 0.5f, 0.5f);
-#endif
 		Shader shaderProgram(vertexShaderPath.c_str(), fragmentShaderPath.c_str());
 #ifdef __ANDROID__
 	GLint shaderLinked = GL_FALSE;
 	glGetProgramiv(shaderProgram.ID, GL_LINK_STATUS, &shaderLinked);
 	if (shaderLinked != GL_TRUE)
 	{
-		showAndroidDiagnosticColor(1.0f, 1.0f, 0.0f);
 		return -1;
 	}
 #endif
@@ -1700,16 +1680,10 @@ void main()
 	catch (const std::exception& exception)
 	{
 		std::cerr << "Plane model load failed: " << exception.what() << std::endl;
-#ifdef __ANDROID__
-		showAndroidDiagnosticColor(0.0f, 0.4f, 0.0f);
-#endif
 		platform::destroyWindow();
 		return -1;
 	}
 	Model& model = *modelPtr;
-#ifdef __ANDROID__
-	showAndroidDiagnosticColor(0.5f, 0.0f, 1.0f);
-#endif
 
 	fs::path orbPath = assetRoot / "Resources" / "models" / "orb" / "redorb.gltf";
 	std::string orbFile = orbPath.string();
@@ -1720,9 +1694,6 @@ void main()
 		return -1;
 	}
 	Model orbModel(orbFile.c_str());
-#ifdef __ANDROID__
-	showAndroidDiagnosticColor(0.0f, 0.5f, 0.5f);
-#endif
 
 	fs::path prismPath = assetRoot / "Resources" / "models" / "prism" / "prism.gltf";
 	if (!fs::exists(prismPath))
@@ -2004,6 +1975,7 @@ void main()
 	bool previousThreeBallsKey = false;
 	bool previousTwoBallsKey = false;
 	bool previousSixBallsKey = false;
+	bool previousScenarioTeleportKey = false;
 	double aimTaskStartTime = 0.0;
 	double aimTaskFinishedTime = 0.0;
 	glm::mat4 playerBallRotation(1.0f);
@@ -2071,6 +2043,9 @@ void main()
 	bool showingControls = false;
 	bool showingRanks = false;
 	bool showingScenarioRanks = false;
+	int crosshairStyle = 0;
+	bool previousCrosshairKey = false;
+	bool previousRanksKey = false;
 	bool previousEscape = false;
 	bool previousPauseMouse = false;
 	bool draggingSensitivity = false;
@@ -2209,9 +2184,6 @@ void main()
 	glBindBuffer(GL_ARRAY_BUFFER, fpsVBO);
 	glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(fpsVertices.size() * sizeof(GLfloat)), fpsVertices.data(), GL_DYNAMIC_DRAW);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
-#ifdef __ANDROID__
-	showAndroidDiagnosticColor(0.0f, 1.0f, 1.0f);
-#endif
 
 	while (!platform::shouldClose())
 	{
@@ -2476,16 +2448,6 @@ void main()
 							clickY >= static_cast<float>(clickFramebufferHeight) * 0.67f - 5.0f * menuCellSize &&
 							clickY <= static_cast<float>(clickFramebufferHeight) * 0.67f + 12.0f * menuCellSize)
 							signUpForm.submitRequested = true;
-						else if (!signUpForm.signInMode && clickX >= formCenterX - 75.0f * menuCellSize && clickX <= formCenterX + 75.0f * menuCellSize &&
-							clickY >= static_cast<float>(clickFramebufferHeight) * 0.90f - 5.0f * menuCellSize &&
-							clickY <= static_cast<float>(clickFramebufferHeight) * 0.90f + 12.0f * menuCellSize)
-						{
-							signUpForm.signInMode = true;
-							signUpForm.email = website_api_config::ownerEmail;
-							signUpForm.password.clear();
-							signUpForm.focusedField = SignUpField::Email;
-							signUpForm.status.clear();
-						}
 						else if (clickX >= formCenterX - 75.0f * menuCellSize && clickX <= formCenterX + 75.0f * menuCellSize &&
 							clickY >= static_cast<float>(clickFramebufferHeight) * 0.75f - 5.0f * menuCellSize &&
 							clickY <= static_cast<float>(clickFramebufferHeight) * 0.75f + 12.0f * menuCellSize)
@@ -2862,8 +2824,6 @@ void main()
 				}
 				else
 				{
-					if (!signUpForm.signInMode)
-						appendCenteredSignUpText("OWNER SIGN IN", static_cast<float>(framebufferHeight) * 0.90f);
 				appendCenteredSignUpText(signUpForm.status.empty() ? "TAB SWITCH ENTER SUBMIT" : signUpForm.status,
 						static_cast<float>(framebufferHeight) * 0.96f);
 				}
@@ -3130,6 +3090,22 @@ void main()
 			physicsAccumulator -= step;
 		}
 
+		bool scenarioTeleportPressed = !gamePaused && platform::isKeyDown(platform::Key::J);
+		if (scenarioTeleportPressed && !previousScenarioTeleportKey)
+		{
+			const glm::vec3 scenarioCenter(0.0f, ballGroundY, (aimTrainerMinZ + aimTrainerMaxZ) * 0.5f);
+			balls[playerBallIndex].position = scenarioCenter;
+			balls[playerBallIndex].velocity = glm::vec3(0.0f);
+			camera.Position = scenarioCenter + glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
+			previousCameraPosition = camera.Position;
+			camera.horizontalVelocity = glm::vec3(0.0f);
+			cameraVerticalVelocity = 0.0f;
+			aimTaskRunning = false;
+			aimTaskFinished = false;
+			aimTaskScore = 0;
+		}
+		previousScenarioTeleportKey = scenarioTeleportPressed;
+
 		bool xPressed = !gamePaused && platform::isKeyDown(platform::Key::X);
 		if (xPressed && !previousX)
 			activeBall = (activeBall + 1) % static_cast<int>(balls.size());
@@ -3168,6 +3144,23 @@ void main()
 		previousTwoBallsKey = twoBallsPressed;
 		previousThreeBallsKey = threeBallsPressed;
 		previousSixBallsKey = sixBallsPressed;
+
+		bool crosshairKeyPressed = platform::isKeyDown(platform::Key::C);
+		if (crosshairKeyPressed && !previousCrosshairKey)
+			crosshairStyle = (crosshairStyle + 1) % 4;
+		previousCrosshairKey = crosshairKeyPressed;
+		bool ranksKeyPressed = platform::isKeyDown(platform::Key::R);
+		if (ranksKeyPressed && !previousRanksKey && !gamePaused)
+		{
+			gamePaused = true;
+			showingControls = false;
+			showingRanks = true;
+			showingScenarioRanks = false;
+			platform::setCursorCaptured(false);
+			pauseStartedAt = platform::getTime();
+			previousCameraPosition = camera.Position;
+		}
+		previousRanksKey = ranksKeyPressed;
 
 		for (std::size_t ballIndex = 0; !gamePaused && ballIndex < balls.size(); ++ballIndex)
 		{
@@ -3311,8 +3304,8 @@ void main()
 				float clickX = static_cast<float>(cursorX);
 				float clickY = static_cast<float>(cursorY);
 				float selectorCellSize = fpsCellSize;
-				float selectorTop = static_cast<float>(selectorFramebufferHeight) * 0.08f;
-				float selectorRowSpacing = 9.0f * selectorCellSize;
+				float selectorTop = 16.0f + 24.0f * selectorCellSize;
+				float selectorRowSpacing = 6.0f * selectorCellSize;
 				int clickedRow = static_cast<int>(std::round((clickY - selectorTop) / selectorRowSpacing));
 				float clickedRowTop = selectorTop + static_cast<float>(clickedRow) * selectorRowSpacing;
 				const std::array<std::string, 3> selectorLabels = {
@@ -3514,7 +3507,18 @@ void main()
 			glBindVertexArray(crosshairVAO);
 			glUniform4f(crosshairColorLocation, 0.0f, 1.0f, 1.0f, 1.0f);
 			glLineWidth(1.5f);
-			glDrawArrays(GL_LINES, 0, 4);
+			if (crosshairStyle == 1)
+			{
+				glUniform1f(crosshairPointSizeLocation, 6.0f);
+				glDrawArrays(GL_POINTS, 4, 1);
+				glUniform1f(crosshairPointSizeLocation, 1.0f);
+			}
+			else if (crosshairStyle == 2)
+				glDrawArrays(GL_LINE_LOOP, 5, 24);
+			else if (crosshairStyle == 3)
+				glDrawArrays(GL_LINES, 29, 8);
+			else
+				glDrawArrays(GL_LINES, 0, 4);
 			glBindVertexArray(0);
 		}
 		glUniform1f(crosshairAspectLocation, 1.0f);
