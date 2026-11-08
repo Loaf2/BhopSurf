@@ -408,7 +408,11 @@ static async Task<GoogleProfile?> GetGoogleProfileAsync(
         ["grant_type"] = "authorization_code"
     }), cancellationToken);
     if (!tokenResponse.IsSuccessStatusCode)
+    {
+        string providerError = await tokenResponse.Content.ReadAsStringAsync(cancellationToken);
+        Console.Error.WriteLine($"Google token exchange failed with HTTP {(int)tokenResponse.StatusCode}: {providerError}");
         return null;
+    }
 
     GoogleTokenResponse? token = await tokenResponse.Content.ReadFromJsonAsync<GoogleTokenResponse>(cancellationToken);
     if (string.IsNullOrWhiteSpace(token?.AccessToken))
