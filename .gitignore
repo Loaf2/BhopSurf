@@ -1,0 +1,6 @@
+build/
+bin/
+obj/
+.vs/
+gamessite/
+Resources/Ico.ico.bak
