@@ -1,9 +1,11 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.Mail;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -19,6 +21,11 @@ if (builder.Environment.IsDevelopment() &&
     (string.IsNullOrWhiteSpace(emailFromAddress) || emailFromAddress.Contains("your-verified-domain", StringComparison.OrdinalIgnoreCase)))
     emailFromAddress = "BhopSurf <onboarding@resend.dev>";
 string publicBaseUrl = builder.Configuration["Email:PublicBaseUrl"] ?? "http://localhost:5000";
+string googleClientId = builder.Configuration["Google:ClientId"] ?? string.Empty;
+string googleClientSecret = builder.Configuration["Google:ClientSecret"] ?? string.Empty;
+string googleRedirectUri = $"{publicBaseUrl.TrimEnd('/')}/api/auth/google/callback";
+var googleClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+var pendingGoogleLogins = new ConcurrentDictionary<string, PendingGoogleLogin>();
 await using (var connection = await dataSource.OpenConnectionAsync())
 {
     await using var createTable = new NpgsqlCommand(
@@ -35,7 +42,10 @@ await using (var connection = await dataSource.OpenConnectionAsync())
             aim_best_score INTEGER NOT NULL DEFAULT 0,
             two_balls_best_score INTEGER NOT NULL DEFAULT 0,
             six_balls_best_score INTEGER NOT NULL DEFAULT 0,
-            tracking_best_score INTEGER NOT NULL DEFAULT 0
+            tracking_best_score INTEGER NOT NULL DEFAULT 0,
+            far_tracking_best_score INTEGER NOT NULL DEFAULT 0,
+            medium_tracking_best_score INTEGER NOT NULL DEFAULT 0,
+            display_name VARCHAR(64) NULL
         );
         """, connection);
     await createTable.ExecuteNonQueryAsync();
@@ -46,7 +56,12 @@ await using (var connection = await dataSource.OpenConnectionAsync())
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS aim_best_score INTEGER NOT NULL DEFAULT 0; " +
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS two_balls_best_score INTEGER NOT NULL DEFAULT 0; " +
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS six_balls_best_score INTEGER NOT NULL DEFAULT 0; " +
-        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tracking_best_score INTEGER NOT NULL DEFAULT 0;", connection);
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tracking_best_score INTEGER NOT NULL DEFAULT 0; " +
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS far_tracking_best_score INTEGER NOT NULL DEFAULT 0; " +
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS medium_tracking_best_score INTEGER NOT NULL DEFAULT 0; " +
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS display_name VARCHAR(64) NULL; " +
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS google_subject VARCHAR(255) NULL; " +
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_accounts_google_subject ON accounts (google_subject) WHERE google_subject IS NOT NULL;", connection);
     await migrateTable.ExecuteNonQueryAsync();
 
     await using var createSessions = new NpgsqlCommand(
@@ -210,17 +225,39 @@ app.MapGet("/api/ranks", async (HttpRequest request, CancellationToken cancellat
 
     await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
     await using var command = new NpgsqlCommand(
-        "SELECT aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score FROM accounts WHERE id = @account_id;", connection);
+        "SELECT aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score, far_tracking_best_score, medium_tracking_best_score FROM accounts WHERE id = @account_id;", connection);
     command.Parameters.AddWithValue("account_id", accountId.Value);
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     if (!await reader.ReadAsync(cancellationToken))
         return Results.Unauthorized();
-    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3)));
+    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5)));
+});
+
+app.MapGet("/api/leaderboard", async (string? scenario, HttpRequest request, CancellationToken cancellationToken) =>
+{
+    Guid? accountId = await GetSessionAccountIdAsync(request, dataSource, cancellationToken);
+    if (accountId is null)
+        return Results.Unauthorized();
+
+    if (scenario is null || !LeaderboardColumns.TryGetValue(scenario, out string? column))
+        return Results.BadRequest(new { error = "Unknown scenario." });
+
+    await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+    await using var command = new NpgsqlCommand(
+        $"SELECT name, score, player_rank FROM (" +
+        $"SELECT COALESCE(display_name, 'Player') AS name, {column} AS score, CAST(RANK() OVER (ORDER BY {column} DESC) AS INTEGER) AS player_rank " +
+        $"FROM accounts WHERE {column} > 0) ranked " +
+        "ORDER BY player_rank, name LIMIT 10;", connection);
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    var entries = new List<LeaderboardEntry>();
+    while (await reader.ReadAsync(cancellationToken))
+        entries.Add(new LeaderboardEntry(reader.GetString(0), reader.GetInt32(1), reader.GetInt32(2)));
+    return Results.Ok(entries);
 });
 
 app.MapPut("/api/ranks", async (RankScores scores, HttpRequest request, CancellationToken cancellationToken) =>
 {
-    if (scores.AimBestScore < 0 || scores.TwoBallsBestScore < 0 || scores.SixBallsBestScore < 0 || scores.TrackingBestScore < 0)
+    if (scores.AimBestScore < 0 || scores.TwoBallsBestScore < 0 || scores.SixBallsBestScore < 0 || scores.TrackingBestScore < 0 || scores.FarTrackingBestScore < 0 || scores.MediumTrackingBestScore < 0)
         return Results.BadRequest(new { error = "Scores cannot be negative." });
 
     Guid? accountId = await GetSessionAccountIdAsync(request, dataSource, cancellationToken);
@@ -233,19 +270,66 @@ app.MapPut("/api/ranks", async (RankScores scores, HttpRequest request, Cancella
         "aim_best_score = GREATEST(aim_best_score, @aim_best_score), " +
         "two_balls_best_score = GREATEST(two_balls_best_score, @two_balls_best_score), " +
         "six_balls_best_score = GREATEST(six_balls_best_score, @six_balls_best_score), " +
-        "tracking_best_score = GREATEST(tracking_best_score, @tracking_best_score) " +
+        "tracking_best_score = GREATEST(tracking_best_score, @tracking_best_score), " +
+        "far_tracking_best_score = GREATEST(far_tracking_best_score, @far_tracking_best_score), " +
+        "medium_tracking_best_score = GREATEST(medium_tracking_best_score, @medium_tracking_best_score) " +
         "WHERE id = @account_id " +
-        "RETURNING aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score;", connection);
+        "RETURNING aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score, far_tracking_best_score, medium_tracking_best_score;", connection);
     command.Parameters.AddWithValue("aim_best_score", scores.AimBestScore);
     command.Parameters.AddWithValue("two_balls_best_score", scores.TwoBallsBestScore);
     command.Parameters.AddWithValue("six_balls_best_score", scores.SixBallsBestScore);
     command.Parameters.AddWithValue("tracking_best_score", scores.TrackingBestScore);
+    command.Parameters.AddWithValue("far_tracking_best_score", scores.FarTrackingBestScore);
+    command.Parameters.AddWithValue("medium_tracking_best_score", scores.MediumTrackingBestScore);
     command.Parameters.AddWithValue("account_id", accountId.Value);
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     if (!await reader.ReadAsync(cancellationToken))
         return Results.Unauthorized();
-    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3)));
+    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5)));
 });
+
+app.MapGet("/api/auth/google/start", (string? returnTo) =>
+{
+    if (string.IsNullOrWhiteSpace(googleClientId) || string.IsNullOrWhiteSpace(googleClientSecret))
+        return Results.Problem("Google sign-in is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable);
+    if (!Uri.TryCreate(returnTo, UriKind.Absolute, out Uri? returnUri) || returnUri.Scheme != Uri.UriSchemeHttp ||
+        (returnUri.Host != "127.0.0.1" && returnUri.Host != "localhost"))
+        return Results.BadRequest(new { error = "Invalid return address." });
+
+    string state = CreateSessionToken();
+    pendingGoogleLogins[state] = new PendingGoogleLogin(returnUri.GetLeftPart(UriPartial.Path), DateTime.UtcNow.AddMinutes(10));
+    string authorizeUrl = "https://accounts.google.com/o/oauth2/v2/auth" +
+        "?client_id=" + Uri.EscapeDataString(googleClientId) +
+        "&redirect_uri=" + Uri.EscapeDataString(googleRedirectUri) +
+        "&response_type=code&scope=" + Uri.EscapeDataString("openid email profile") +
+        "&state=" + Uri.EscapeDataString(state) + "&prompt=select_account";
+    return Results.Redirect(authorizeUrl);
+}).AllowAnonymous();
+
+app.MapGet("/api/auth/google/callback", async (string? code, string? state, CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state) ||
+        !pendingGoogleLogins.TryRemove(state, out PendingGoogleLogin? pending) || pending.ExpiresAtUtc < DateTime.UtcNow)
+        return Results.BadRequest("Google sign-in expired. Try again.");
+
+    GoogleProfile? profile = await GetGoogleProfileAsync(googleClient, googleClientId, googleClientSecret, googleRedirectUri, code, cancellationToken);
+    if (profile is null)
+        return Results.BadRequest("Google sign-in failed.");
+
+    Guid accountId = await UpsertGoogleAccountAsync(dataSource, profile, cancellationToken);
+    string sessionToken = CreateSessionToken();
+    await using (var connection = await dataSource.OpenConnectionAsync(cancellationToken))
+    await using (var command = new NpgsqlCommand(
+        "INSERT INTO auth_sessions (token_hash, account_id, expires_at_utc) VALUES (@token_hash, @account_id, @expires_at_utc);", connection))
+    {
+        command.Parameters.AddWithValue("token_hash", HashSessionToken(sessionToken));
+        command.Parameters.AddWithValue("account_id", accountId);
+        command.Parameters.AddWithValue("expires_at_utc", DateTime.UtcNow.AddDays(30));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    return Results.Redirect($"{pending.ClientRedirect}?session={Uri.EscapeDataString(sessionToken)}&name={Uri.EscapeDataString(profile.Name)}");
+}).AllowAnonymous();
 
 app.Run();
 
@@ -305,6 +389,79 @@ static async Task<Guid?> GetSessionAccountIdAsync(
     command.Parameters.AddWithValue("now_utc", DateTime.UtcNow);
     object? accountId = await command.ExecuteScalarAsync(cancellationToken);
     return accountId is Guid id ? id : null;
+}
+
+static async Task<GoogleProfile?> GetGoogleProfileAsync(
+    HttpClient client,
+    string clientId,
+    string clientSecret,
+    string redirectUri,
+    string code,
+    CancellationToken cancellationToken)
+{
+    using var tokenResponse = await client.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(new Dictionary<string, string>
+    {
+        ["code"] = code,
+        ["client_id"] = clientId,
+        ["client_secret"] = clientSecret,
+        ["redirect_uri"] = redirectUri,
+        ["grant_type"] = "authorization_code"
+    }), cancellationToken);
+    if (!tokenResponse.IsSuccessStatusCode)
+        return null;
+
+    GoogleTokenResponse? token = await tokenResponse.Content.ReadFromJsonAsync<GoogleTokenResponse>(cancellationToken);
+    if (string.IsNullOrWhiteSpace(token?.AccessToken))
+        return null;
+
+    using var userInfoRequest = new HttpRequestMessage(HttpMethod.Get, "https://openidconnect.googleapis.com/v1/userinfo");
+    userInfoRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+    using var userInfoResponse = await client.SendAsync(userInfoRequest, cancellationToken);
+    if (!userInfoResponse.IsSuccessStatusCode)
+        return null;
+
+    GoogleUserInfo? info = await userInfoResponse.Content.ReadFromJsonAsync<GoogleUserInfo>(cancellationToken);
+    string? email = NormalizeEmail(info?.Email);
+    if (info?.Sub is null || email is null || !info.EmailVerified)
+        return null;
+
+    string name = (info.Name ?? string.Empty).Trim();
+    if (name.Length > 64)
+        name = name[..64];
+    if (name.Length == 0)
+        name = "Player";
+
+    return new GoogleProfile(info.Sub, email, name);
+}
+
+static async Task<Guid> UpsertGoogleAccountAsync(NpgsqlDataSource dataSource, GoogleProfile profile, CancellationToken cancellationToken)
+{
+    await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+    await using (var link = new NpgsqlCommand(
+        "UPDATE accounts SET google_subject = COALESCE(google_subject, @google_subject), display_name = @display_name " +
+        "WHERE google_subject = @google_subject OR (google_subject IS NULL AND normalized_email = @normalized_email) " +
+        "RETURNING id;", connection))
+    {
+        link.Parameters.AddWithValue("google_subject", profile.Subject);
+        link.Parameters.AddWithValue("display_name", profile.Name);
+        link.Parameters.AddWithValue("normalized_email", profile.Email);
+        if (await link.ExecuteScalarAsync(cancellationToken) is Guid existingId)
+            return existingId;
+    }
+
+    Guid accountId = Guid.NewGuid();
+    await using var insert = new NpgsqlCommand(
+        "INSERT INTO accounts (id, email, normalized_email, password_hash, created_at_utc, email_confirmed, google_subject, display_name) " +
+        "VALUES (@id, @email, @normalized_email, @password_hash, @created_at_utc, TRUE, @google_subject, @display_name);", connection);
+    insert.Parameters.AddWithValue("id", accountId);
+    insert.Parameters.AddWithValue("email", profile.Email);
+    insert.Parameters.AddWithValue("normalized_email", profile.Email);
+    insert.Parameters.AddWithValue("password_hash", PasswordHashing.Hash(CreateSessionToken()));
+    insert.Parameters.AddWithValue("created_at_utc", DateTime.UtcNow);
+    insert.Parameters.AddWithValue("google_subject", profile.Subject);
+    insert.Parameters.AddWithValue("display_name", profile.Name);
+    await insert.ExecuteNonQueryAsync(cancellationToken);
+    return accountId;
 }
 
 static async Task<bool> SendConfirmationEmailAsync(
@@ -369,7 +526,31 @@ static async Task<bool> SendConfirmationEmailAsync(
 
 sealed record AuthRequest(string? Email, string? Password);
 sealed record ResendConfirmationRequest(string? Email);
-sealed record RankScores(int AimBestScore, int TwoBallsBestScore, int SixBallsBestScore, int TrackingBestScore = 0);
+sealed record RankScores(int AimBestScore, int TwoBallsBestScore, int SixBallsBestScore, int TrackingBestScore = 0, int FarTrackingBestScore = 0, int MediumTrackingBestScore = 0);
+sealed record LeaderboardEntry(string Name, int Score, int Rank);
+sealed record GoogleProfile(string Subject, string Email, string Name);
+sealed record PendingGoogleLogin(string ClientRedirect, DateTime ExpiresAtUtc);
+sealed record GoogleTokenResponse([property: JsonPropertyName("access_token")] string? AccessToken);
+sealed record GoogleUserInfo(
+    [property: JsonPropertyName("sub")] string? Sub,
+    [property: JsonPropertyName("email")] string? Email,
+    [property: JsonPropertyName("email_verified")] bool EmailVerified,
+    [property: JsonPropertyName("name")] string? Name);
+
+static class LeaderboardColumns
+{
+    private static readonly Dictionary<string, string> columns = new(StringComparer.Ordinal)
+    {
+        ["aim"] = "aim_best_score",
+        ["two_balls"] = "two_balls_best_score",
+        ["six_balls"] = "six_balls_best_score",
+        ["tracking"] = "tracking_best_score",
+        ["tracking_far"] = "far_tracking_best_score",
+        ["tracking_medium"] = "medium_tracking_best_score"
+    };
+
+    public static bool TryGetValue(string scenario, out string? column) => columns.TryGetValue(scenario, out column);
+}
 
 static class PasswordHashing
 {
