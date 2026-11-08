@@ -29,7 +29,7 @@ enum class Key
 	J,
 	Num1,
 	Num2,
-	Num4,
+	Num3,
 	C,
 	R,
 	Count

@@ -2970,7 +2970,7 @@ void main()
 				const std::array<std::string, 3> scenarioLabels = {
 					!sixBallsScenario && !twoBallsScenario ? "> 1 THREE BALLS" : "  1 THREE BALLS",
 					twoBallsScenario ? "> 2 TWO BALLS" : "  2 TWO BALLS",
-					sixBallsScenario ? "> 4 SIX BALLS" : "  4 SIX BALLS"
+					sixBallsScenario ? "> 3 SIX BALLS" : "  3 SIX BALLS"
 				};
 				float selectorCellSize = fpsCellSize;
 				float selectorTop = 16.0f + 24.0f * fpsCellSize;
@@ -3170,9 +3170,8 @@ void main()
 		previousZ = zPressed;
 		bool twoBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num2);
 		bool threeBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num1);
-		bool sixBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num4);
-		if (twoBallsPressed && !previousTwoBallsKey)
-		{
+		bool sixBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num3);
+		if (twoBallsPressed && !previousTwoBallsKey)		{
 			twoBallsScenario = true;
 			sixBallsScenario = false;
 			aimTaskRunning = false;
@@ -3363,7 +3362,7 @@ void main()
 				int clickedRow = static_cast<int>(std::round((clickY - selectorTop) / selectorRowSpacing));
 				float clickedRowTop = selectorTop + static_cast<float>(clickedRow) * selectorRowSpacing;
 				const std::array<std::string, 3> selectorLabels = {
-					"  1 THREE BALLS", "  2 TWO BALLS", "  4 SIX BALLS"
+					"  1 THREE BALLS", "  2 TWO BALLS", "  3 SIX BALLS"
 				};
 				float rowLabelWidth = clickedRow >= 0 && clickedRow < 3
 					? static_cast<float>(selectorLabels[static_cast<std::size_t>(clickedRow)].size() * 4 - 1) * selectorCellSize

@@ -50,7 +50,7 @@ int toGlfwKey(Key key)
 	case Key::R: return GLFW_KEY_R;
 	case Key::Num2: return GLFW_KEY_2;
 	case Key::Num1: return GLFW_KEY_1;
-	case Key::Num4: return GLFW_KEY_4;
+	case Key::Num3: return GLFW_KEY_3;
 	default: return GLFW_KEY_UNKNOWN;
 	}
 }
@@ -82,7 +82,7 @@ Key fromGlfwKey(int key, bool& recognized)
 	case GLFW_KEY_R: return Key::R;
 	case GLFW_KEY_2: return Key::Num2;
 	case GLFW_KEY_1: return Key::Num1;
-	case GLFW_KEY_4: return Key::Num4;
+	case GLFW_KEY_3: return Key::Num3;
 	default:
 		recognized = false;
 		return Key::Count;

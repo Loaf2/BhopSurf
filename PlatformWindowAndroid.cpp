@@ -90,7 +90,7 @@ Key mapKeyCode(int32_t keyCode, bool& mapped)
 	case AKEYCODE_J: return Key::J;
 	case AKEYCODE_2: return Key::Num2;
 	case AKEYCODE_1: return Key::Num1;
-	case AKEYCODE_4: return Key::Num4;
+	case AKEYCODE_3: return Key::Num3;
 	case AKEYCODE_C: return Key::C;
 	case AKEYCODE_R: return Key::R;
 	default: mapped = false; return Key::Count;
@@ -687,7 +687,7 @@ int32_t handleInputEvent(android_app*, AInputEvent* event)
 			}
 			if (g_scenarioMenuOpen && layout.scenarioSix.contains(x, y))
 			{
-				touchKeys[static_cast<size_t>(Key::Num4)] = true;
+				touchKeys[static_cast<size_t>(Key::Num3)] = true;
 				g_scenarioMenuOpen = false;
 				continue;
 			}
