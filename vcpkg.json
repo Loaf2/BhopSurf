@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "aimtrainer",
+  "version-string": "1.0.0",
+  "dependencies": [
+    "glfw3",
+    "freetype",
+    "curl",
+    "openssl"
+  ],
+  "builtin-baseline": "6fdd23fa0a9479a9f9a1c48178696f60cf39255d"
+}

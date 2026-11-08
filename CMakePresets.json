@@ -1,0 +1,62 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-vs-vcpkg",
+      "displayName": "Windows x64 (Visual Studio + vcpkg)",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_MODE": "ON"
+      }
+    },
+    {
+      "name": "android-arm64",
+      "displayName": "Android arm64 (NDK 27)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "D:/Android/Sdk/ndk/27.0.12077973/build/cmake/android.toolchain.cmake",
+        "ANDROID_ABI": "arm64-v8a",
+        "ANDROID_PLATFORM": "android-24",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_MANIFEST_MODE": "OFF"
+      }
+    },
+    {
+      "name": "android-x86_64",
+      "displayName": "Android x86_64 (NDK 27, emulator)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "D:/Android/Sdk/ndk/27.0.12077973/build/cmake/android.toolchain.cmake",
+        "ANDROID_ABI": "x86_64",
+        "ANDROID_PLATFORM": "android-24",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_MANIFEST_MODE": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-vs-vcpkg-debug",
+      "configurePreset": "windows-vs-vcpkg",
+      "configuration": "Debug"
+    },
+    {
+      "name": "android-arm64-debug",
+      "configurePreset": "android-arm64"
+    },
+    {
+      "name": "android-x86_64-debug",
+      "configurePreset": "android-x86_64"
+    }
+  ]
+}

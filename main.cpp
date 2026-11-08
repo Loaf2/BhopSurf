@@ -10,7 +10,9 @@
 #include<vector>
 #include<unordered_map>
 #ifndef _WIN32
+#ifndef AIMTRAINER_ANDROID
 #include<curl/curl.h>
+#endif
 #include<ft2build.h>
 #include FT_FREETYPE_H
 #define MINIAUDIO_IMPLEMENTATION
@@ -74,8 +76,8 @@ bool initializePortableAudio(const std::vector<std::uint8_t>& jumpWav, const std
 	if (ma_engine_init(&engineConfig, &portableAudio.engine) != MA_SUCCESS)
 		return false;
 	portableAudio.initialized = true;
-	ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32,
-		ma_engine_get_channels(&portableAudio.engine), ma_engine_get_sample_rate(&portableAudio.engine));
+ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32,
+	ma_engine_get_channels(&portableAudio.engine), ma_engine_get_sample_rate(&portableAudio.engine));
 	if (ma_decoder_init_memory(jumpWav.data(), jumpWav.size(), &decoderConfig, &portableAudio.jumpDecoder) != MA_SUCCESS)
 		return false;
 	portableAudio.jumpInitialized = true;
@@ -354,6 +356,7 @@ void saveAimHighScore(const fs::path& scorePath, int score)
 #define GLM_ENABLE_EXPERIMENTAL
 #include"Model.h"
 #include<iostream>
+#include<memory>
 #include<array>
 #include<limits>
 #include<random>
@@ -361,11 +364,10 @@ void saveAimHighScore(const fs::path& scorePath, int score)
 #include<string_view>
 #include<system_error>
 #include<thread>
+#ifdef __ANDROID__
+#include<glad/gles2.h>
+#else
 #include<glad/glad.h>
-#include<GLFW/glfw3.h>
-#ifdef _WIN32
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include<GLFW/glfw3native.h>
 #endif
 #include<stb/stb_image.h>
 #include<glm/glm.hpp>
@@ -379,6 +381,12 @@ void saveAimHighScore(const fs::path& scorePath, int score)
 #include"EBO.h"
 #include"auth_api_config.h"
 #include"website_api_config.h"
+
+#ifdef __ANDROID__
+#define AIMTRAINER_GLSL_VERSION "300 es"
+#else
+#define AIMTRAINER_GLSL_VERSION "330 core"
+#endif
 
 const int defaultWidth = 800;
 const int defaultHeight = 800;
@@ -471,8 +479,9 @@ std::vector<std::uint8_t> makeAimTargetHitWav()
 	return wav;
 }
 
-void framebuffer_size_callback(GLFWwindow* window, int width, int height);
-void processInput(GLFWwindow *window);
+void framebuffer_size_callback(int width, int height);
+void processInput();
+Camera* cameraForFramebufferCallback = nullptr;
 
 std::array<const char*, 5> getFpsGlyph(char character)
 {
@@ -614,7 +623,7 @@ std::string& getFocusedSignUpText()
 	return signUpForm.email;
 }
 
-void signUpCharCallback(GLFWwindow*, unsigned int codepoint)
+void signUpCharCallback(unsigned int codepoint)
 {
 	if (!signUpForm.active || signUpForm.submitting || codepoint < 0x20 || codepoint > 0x7e)
 		return;
@@ -648,13 +657,14 @@ void signUpCharCallback(GLFWwindow*, unsigned int codepoint)
 	input.push_back(character);
 }
 
-void signUpKeyCallback(GLFWwindow*, int key, int, int action, int mods)
+void signUpKeyCallback(platform::Key key, platform::KeyAction action)
 {
-	if (!signUpForm.active || signUpForm.submitting || (action != GLFW_PRESS && action != GLFW_REPEAT))
+	if (!signUpForm.active || signUpForm.submitting || (action != platform::KeyAction::Press && action != platform::KeyAction::Repeat))
 		return;
-	if (signUpForm.activationMode && action == GLFW_PRESS && key == GLFW_KEY_V && (mods & GLFW_MOD_CONTROL) != 0)
+	const bool controlDown = platform::isKeyDown(platform::Key::Control);
+	if (signUpForm.activationMode && action == platform::KeyAction::Press && key == platform::Key::V && controlDown)
 	{
-		const char* clipboardText = glfwGetClipboardString(glfwGetCurrentContext());
+		const char* clipboardText = platform::getClipboardString();
 		if (clipboardText != nullptr)
 		{
 			for (const char* character = clipboardText; *character != '\0' && signUpForm.activationKey.size() < 43; ++character)
@@ -670,23 +680,22 @@ void signUpKeyCallback(GLFWwindow*, int key, int, int action, int mods)
 		return;
 	}
 
-	if (key == GLFW_KEY_BACKSPACE)
+	if (key == platform::Key::Backspace)
 	{
 		std::string& input = getFocusedSignUpText();
-		if ((mods & GLFW_MOD_CONTROL) != 0)
+		if (controlDown)
 			input.clear();
 		else if (!input.empty())
 			input.pop_back();
 	}
-	else if (action == GLFW_PRESS && key == GLFW_KEY_TAB)
+	else if (action == platform::KeyAction::Press && key == platform::Key::Tab)
 	{
-		bool backwards = glfwGetKey(glfwGetCurrentContext(), GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-			glfwGetKey(glfwGetCurrentContext(), GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+		bool backwards = platform::isKeyDown(platform::Key::LeftShift) || platform::isKeyDown(platform::Key::RightShift);
 		int field = static_cast<int>(signUpForm.focusedField);
 		int fieldCount = signUpForm.activationMode ? 1 : (signUpForm.signInMode ? 2 : 3);
 		signUpForm.focusedField = static_cast<SignUpField>((field + (backwards ? fieldCount - 1 : 1)) % fieldCount);
 	}
-	else if (action == GLFW_PRESS && key == GLFW_KEY_ENTER)
+	else if (action == platform::KeyAction::Press && key == platform::Key::Enter)
 	{
 		signUpForm.submitRequested = true;
 	}
@@ -710,7 +719,7 @@ SignUpResult signUpResult;
 bool signUpResultReady = false;
 std::thread signUpAuthThread;
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(AIMTRAINER_ANDROID)
 size_t appendCurlResponse(char* data, size_t size, size_t count, void* context)
 {
 	size_t bytes = size * count;
@@ -826,6 +835,8 @@ ApiResponse sendApiRequest(const std::string& method, const std::string& path, c
 	WinHttpCloseHandle(request);
 	WinHttpCloseHandle(connection);
 	WinHttpCloseHandle(session);
+	return response;
+#elif defined(AIMTRAINER_ANDROID)
 	return response;
 #else
 	CURL* request = curl_easy_init();
@@ -1014,7 +1025,7 @@ bool isWebsiteApiConfigured()
 	return baseUrl.starts_with("https://") && baseUrl.find("YOUR-WEBSITE-HOST") == std::string_view::npos;
 }
 
-SignUpResult sendActivationApiRequest(const std::string& email, const std::string& activationKey)
+SignUpResult sendActivationApiRequest(const std::string& email, const std::string& activationKey, const std::string& sessionToken)
 {
 	SignUpResult result;
 	if (!isWebsiteApiConfigured())
@@ -1024,7 +1035,7 @@ SignUpResult sendActivationApiRequest(const std::string& email, const std::strin
 	}
 	std::string body = "{\"email\":\"" + escapeJsonString(email) +
 		"\",\"activationKey\":\"" + escapeJsonString(activationKey) + "\"}";
-	ApiResponse response = sendApiRequest("POST", "/api/game/activate", body, {}, website_api_config::baseUrl);
+	ApiResponse response = sendApiRequest("POST", "/api/game/activate", body, sessionToken, website_api_config::baseUrl);
 	if (response.received && response.statusCode == 200)
 		result.activationAccepted = true;
 	else if (response.statusCode == 403)
@@ -1045,7 +1056,7 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 		return vertices;
 
 	static std::unordered_map<std::string, std::vector<glm::vec2>> renderedTextCache;
-	int fontHeight = std::max(1, static_cast<int>(std::lround(cellSize * 6.0f)));
+	int fontHeight = std::max(1, static_cast<int>(std::lround(cellSize * 6.5f)));
 	int renderPadding = std::max(2, static_cast<int>(std::ceil(cellSize * 2.0f)));
 	int bitmapHeight = fontHeight + renderPadding * 2;
 	int textWidth = std::max(1, static_cast<int>(std::ceil(
@@ -1070,7 +1081,7 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 			void* bitmapPixels = nullptr;
 			HDC deviceContext = CreateCompatibleDC(nullptr);
 			HBITMAP bitmap = deviceContext ? CreateDIBSection(deviceContext, &bitmapInfo, DIB_RGB_COLORS, &bitmapPixels, nullptr, 0) : nullptr;
-			HFONT font = CreateFontW(-fontHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+			HFONT font = CreateFontW(-fontHeight, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
 				OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 			if (deviceContext && bitmap && bitmapPixels && font)
 			{
@@ -1113,14 +1124,16 @@ std::vector<GLfloat> buildFpsVertices(const std::string& text, int width, int he
 			if (!fontLibraryInitialized && FT_Init_FreeType(&fontLibrary) == 0)
 			{
 				fontLibraryInitialized = true;
-				const std::array<const char*, 7> fontPaths = {
+				const std::array<const char*, 9> fontPaths = {
 					"/System/Library/Fonts/Supplemental/Arial.ttf",
 					"/System/Library/Fonts/Supplemental/Helvetica.ttf",
 					"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 					"/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
 					"/usr/share/fonts/truetype/freefont/FreeSans.ttf",
 					"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-					"/System/Library/Fonts/SFNS.ttf"
+					"/System/Library/Fonts/SFNS.ttf",
+					"/system/fonts/Roboto-Regular.ttf",
+					"/system/fonts/DroidSans.ttf"
 				};
 				for (const char* fontPath : fontPaths)
 				{
@@ -1221,72 +1234,77 @@ glm::vec3 closestPointOnTriangle(const glm::vec3& point, const glm::vec3& a, con
 	return a + ab * v + ac * w;
 }
 
+int runApplication();
+
+#ifdef __ANDROID__
+#include <android_native_app_glue.h>
+
+namespace platform
+{
+void setAndroidApp(android_app* app);
+}
+
+#ifdef __ANDROID__
+void showAndroidDiagnosticColor(float red, float green, float blue)
+{
+	glClearColor(red, green, blue, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT);
+	platform::swapBuffers();
+}
+#endif
+
+extern "C" void android_main(android_app* app)
+{
+	platform::setAndroidApp(app);
+	runApplication();
+}
+#else
 int main()
 {
-	if (!glfwInit())
-	{
-		std::cerr << "Failed to initialize GLFW" << std::endl;
-		return -1;
-	}
-
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-
-	GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
-	const GLFWvidmode* nativeMode = primaryMonitor ? glfwGetVideoMode(primaryMonitor) : nullptr;
-	int windowWidth = nativeMode ? nativeMode->width : defaultWidth;
-	int windowHeight = nativeMode ? nativeMode->height : defaultHeight;
-	GLFWwindow* window = glfwCreateWindow
-	(
-		windowWidth,
-		windowHeight,
-		"Aim Trainer",
-		nativeMode ? primaryMonitor : nullptr,
-		nullptr
-	);
-	if (window == NULL)
-	{
-		std::cerr << "Failed to create GLFW window" << std::endl;
-		glfwTerminate();
-		return -1;
-	}
-#ifdef _WIN32
-	NativeWindowIcon windowIcon;
-	windowIcon.handle = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(501), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE));
-	if (windowIcon.handle != nullptr)
-	{
-		HWND nativeWindow = glfwGetWin32Window(window);
-		SendMessageW(nativeWindow, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(windowIcon.handle));
-		SendMessageW(nativeWindow, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(windowIcon.handle));
-	}
+	return runApplication();
+}
 #endif
-	glfwMakeContextCurrent(window);
-	glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-	glfwSetCharCallback(window, signUpCharCallback);
-	glfwSetKeyCallback(window, signUpKeyCallback);
-	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-	glfwSwapInterval(0);
+
+int runApplication()
+{
+	int windowWidth = defaultWidth;
+	int windowHeight = defaultHeight;
+	if (!platform::createWindow(windowWidth, windowHeight))
+	{
+		std::cerr << "Failed to create window" << std::endl;
+		return -1;
+	}
+	platform::setTextCallback(signUpCharCallback);
+	platform::setKeyCallback(signUpKeyCallback);
+	platform::setFramebufferCallback(framebuffer_size_callback);
 
 #ifdef _WIN32
 	gladLoadGL();
 #else
-	if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress)))
+	if (!gladLoadGLES2(reinterpret_cast<GLADloadfunc>(platform::getProcAddress)))
 	{
 		std::cerr << "Failed to load OpenGL functions" << std::endl;
-		glfwDestroyWindow(window);
-		glfwTerminate();
+#ifdef __ANDROID__
+		showAndroidDiagnosticColor(0.0f, 0.0f, 1.0f);
+#endif
+		platform::destroyWindow();
 		return -1;
 	}
+#ifdef __ANDROID__
+	showAndroidDiagnosticColor(0.0f, 1.0f, 0.0f);
+#endif
 #endif
 	int framebufferWidth = 0;
 	int framebufferHeight = 0;
-	glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+	platform::getFramebufferSize(framebufferWidth, framebufferHeight);
 	glViewport(0, 0, framebufferWidth, framebufferHeight);
 	glEnable(GL_PROGRAM_POINT_SIZE);
+#ifdef __ANDROID__
+	showAndroidDiagnosticColor(1.0f, 0.5f, 0.0f);
+#endif
 
-	const char* crosshairVertexSource = "#version 330 core\nlayout(location = 0) in vec2 position;\nuniform float aspectRatio;\nuniform float pointSize;\nvoid main() { gl_Position = vec4(position.x / aspectRatio, position.y, 0.0, 1.0); gl_PointSize = pointSize; }";
-	const char* crosshairFragmentSource = "#version 330 core\nout vec4 FragColor;\nuniform vec4 crosshairColor;\nvoid main() { FragColor = crosshairColor; }";
+	const char* crosshairVertexSource = "#version " AIMTRAINER_GLSL_VERSION "\nlayout(location = 0) in vec2 position;\nuniform float aspectRatio;\nuniform float pointSize;\nvoid main() { gl_Position = vec4(position.x / aspectRatio, position.y, 0.0, 1.0); gl_PointSize = pointSize; }";
+	const char* crosshairFragmentSource = "#version " AIMTRAINER_GLSL_VERSION "\nprecision mediump float;\nout vec4 FragColor;\nuniform vec4 crosshairColor;\nvoid main() { FragColor = crosshairColor; }";
 	auto compileCrosshairShader = [](GLenum type, const char* source)
 	{
 		GLuint shader = glCreateShader(type);
@@ -1325,8 +1343,8 @@ int main()
 	GLint crosshairColorLocation = glGetUniformLocation(crosshairProgram, "crosshairColor");
 	GLint crosshairPointSizeLocation = glGetUniformLocation(crosshairProgram, "pointSize");
 
-	const char* skyboxVertexSource = "#version 330 core\nlayout(location = 0) in vec3 position;\nuniform mat4 skyboxMatrix;\nout vec3 skyDirection;\nvoid main() { skyDirection = position; vec4 clip = skyboxMatrix * vec4(position, 1.0); gl_Position = clip.xyww; }";
-	const char* skyboxFragmentSource = R"GLSL(#version 330 core
+	const char* skyboxVertexSource = "#version " AIMTRAINER_GLSL_VERSION "\nlayout(location = 0) in vec3 position;\nuniform mat4 skyboxMatrix;\nout vec3 skyDirection;\nvoid main() { skyDirection = position; vec4 clip = skyboxMatrix * vec4(position, 1.0); gl_Position = clip.xyww; }";
+	const char* skyboxFragmentSource = "#version " AIMTRAINER_GLSL_VERSION "\nprecision mediump float;\n" R"GLSL(
 in vec3 skyDirection;
 uniform float dayAmount;
 uniform float cloudTime;
@@ -1432,9 +1450,12 @@ void main()
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(GLfloat), nullptr);
 	glEnableVertexAttribArray(0);
 	glBindVertexArray(0);
+#ifdef __ANDROID__
+	showAndroidDiagnosticColor(1.0f, 1.0f, 0.5f);
+#endif
 
-	const char* shadowVertexSource = "#version 330 core\nlayout(location = 0) in vec2 position;\nuniform mat4 camMatrix;\nuniform vec2 shadowCenter;\nuniform vec2 shadowRadius;\nuniform float shadowHeight;\nout vec2 shadowCoord;\nvoid main() { shadowCoord = position; vec3 worldPos = vec3(shadowCenter.x + position.x * shadowRadius.x, shadowHeight, shadowCenter.y + position.y * shadowRadius.y); gl_Position = camMatrix * vec4(worldPos, 1.0); }";
-	const char* shadowFragmentSource = "#version 330 core\nin vec2 shadowCoord;\nuniform float shadowOpacity;\nout vec4 FragColor;\nvoid main() { float r = length(shadowCoord); float alpha = (1.0 - smoothstep(0.35, 1.0, r)) * shadowOpacity; if (alpha < 0.01) discard; FragColor = vec4(0.015, 0.025, 0.035, alpha); }";
+	const char* shadowVertexSource = "#version " AIMTRAINER_GLSL_VERSION "\nlayout(location = 0) in vec2 position;\nuniform mat4 camMatrix;\nuniform vec2 shadowCenter;\nuniform vec2 shadowRadius;\nuniform float shadowHeight;\nout vec2 shadowCoord;\nvoid main() { shadowCoord = position; vec3 worldPos = vec3(shadowCenter.x + position.x * shadowRadius.x, shadowHeight, shadowCenter.y + position.y * shadowRadius.y); gl_Position = camMatrix * vec4(worldPos, 1.0); }";
+	const char* shadowFragmentSource = "#version " AIMTRAINER_GLSL_VERSION "\nprecision mediump float;\nin vec2 shadowCoord;\nuniform float shadowOpacity;\nout vec4 FragColor;\nvoid main() { float r = length(shadowCoord); float alpha = (1.0 - smoothstep(0.35, 1.0, r)) * shadowOpacity; if (alpha < 0.01) discard; FragColor = vec4(0.015, 0.025, 0.035, alpha); }";
 	GLuint shadowVertexShader = compileSkyboxShader(GL_VERTEX_SHADER, shadowVertexSource);
 	GLuint shadowFragmentShader = compileSkyboxShader(GL_FRAGMENT_SHADER, shadowFragmentSource);
 	GLuint shadowProgram = glCreateProgram();
@@ -1486,6 +1507,9 @@ void main()
 	glEnableVertexAttribArray(0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glBindVertexArray(0);
+#ifdef __ANDROID__
+	showAndroidDiagnosticColor(0.0f, 1.0f, 0.5f);
+#endif
 
 	fs::path executablePath;
 #ifdef _WIN32
@@ -1561,9 +1585,16 @@ void main()
 	}
 	if (!embeddedAssetsExtracted)
 		assetRoot = fs::current_path();
-	#else
+	#elif defined(__ANDROID__)
+	assetRoot = platform::extractAndroidAssets();
+	if (assetRoot.empty())
+	{
+		showAndroidDiagnosticColor(1.0f, 0.0f, 0.0f);
+		return -1;
+	}
+#else
 	assetRoot = executableDirectory;
-	#endif
+#endif
 
 	if (!hasRequiredAssets(assetRoot))
 	{
@@ -1603,17 +1634,31 @@ void main()
 					glDeleteBuffers(1, &crosshairVBO);
 					glDeleteVertexArrays(1, &crosshairVAO);
 					glDeleteProgram(crosshairProgram);
-					glfwDestroyWindow(window);
-					glfwTerminate();
+					platform::destroyWindow();
 					return -1;
 				}
 			}
 		}
 	}
 
-	std::string vertexShaderPath = (assetRoot / "default.vert").string();
+	#ifdef __ANDROID__
+			showAndroidDiagnosticColor(0.5f, 1.0f, 0.0f);
+		#endif
+			std::string vertexShaderPath = (assetRoot / "default.vert").string();
 	std::string fragmentShaderPath = (assetRoot / "default.frag").string();
-	Shader shaderProgram(vertexShaderPath.c_str(), fragmentShaderPath.c_str());
+	#ifdef __ANDROID__
+		showAndroidDiagnosticColor(1.0f, 0.5f, 0.5f);
+#endif
+		Shader shaderProgram(vertexShaderPath.c_str(), fragmentShaderPath.c_str());
+#ifdef __ANDROID__
+	GLint shaderLinked = GL_FALSE;
+	glGetProgramiv(shaderProgram.ID, GL_LINK_STATUS, &shaderLinked);
+	if (shaderLinked != GL_TRUE)
+	{
+		showAndroidDiagnosticColor(1.0f, 1.0f, 0.0f);
+		return -1;
+	}
+#endif
 
 	glm::vec4 lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
 	glm::vec3 lightPos = glm::vec3(0.5f, 0.5f, 0.5f);
@@ -1625,7 +1670,7 @@ void main()
 	glUniform3f(glGetUniformLocation(shaderProgram.ID, "lightPos"), lightPos.x, lightPos.y, lightPos.z);
 
 	glEnable(GL_DEPTH_TEST);
-	double dayNightStartTime = glfwGetTime();
+	double dayNightStartTime = platform::getTime();
 	constexpr float dayNightCycleSeconds = 180.0f;
 
 	Camera camera(framebufferWidth, framebufferHeight, glm::vec3(0.0f, 2.5f, 6.0f));
@@ -1635,7 +1680,7 @@ void main()
 	float audioVolume = loadAudioVolume(audioVolumePath);
 	const fs::path aimTargetSizePath = getAimTargetSizePath();
 	float aimTargetSize = loadAimTargetSize(aimTargetSizePath);
-	glfwSetWindowUserPointer(window, &camera);
+	cameraForFramebufferCallback = &camera;
 
 	fs::path modelPath = assetRoot / "Resources" / "models" / "plane" / "plane.gltf";
 	std::string modelFile = modelPath.string();
@@ -1643,29 +1688,47 @@ void main()
 	if (!fs::exists(modelPath))
 	{
 		std::cerr << "Model file not found: " << modelPath << std::endl;
-		glfwDestroyWindow(window);
-		glfwTerminate();
+		platform::destroyWindow();
 		return -1;
 	}
 
-	Model model(modelFile.c_str());
+	std::unique_ptr<Model> modelPtr;
+	try
+	{
+		modelPtr = std::make_unique<Model>(modelFile.c_str());
+	}
+	catch (const std::exception& exception)
+	{
+		std::cerr << "Plane model load failed: " << exception.what() << std::endl;
+#ifdef __ANDROID__
+		showAndroidDiagnosticColor(0.0f, 0.4f, 0.0f);
+#endif
+		platform::destroyWindow();
+		return -1;
+	}
+	Model& model = *modelPtr;
+#ifdef __ANDROID__
+	showAndroidDiagnosticColor(0.5f, 0.0f, 1.0f);
+#endif
 
 	fs::path orbPath = assetRoot / "Resources" / "models" / "orb" / "redorb.gltf";
 	std::string orbFile = orbPath.string();
 	if (!fs::exists(orbPath))
 	{
 		std::cerr << "Orb model not found: " << orbPath << std::endl;
-		glfwDestroyWindow(window);
-		glfwTerminate();
+		platform::destroyWindow();
 		return -1;
 	}
 	Model orbModel(orbFile.c_str());
+#ifdef __ANDROID__
+	showAndroidDiagnosticColor(0.0f, 0.5f, 0.5f);
+#endif
+
 	fs::path prismPath = assetRoot / "Resources" / "models" / "prism" / "prism.gltf";
 	if (!fs::exists(prismPath))
 	{
 		std::cerr << "Prism model not found: " << prismPath << std::endl;
-		glfwDestroyWindow(window);
-		glfwTerminate();
+		platform::destroyWindow();
 		return -1;
 	}
 	std::string prismFile = prismPath.string();
@@ -1874,7 +1937,9 @@ void main()
 	int twoBallsHighScore = loadAimHighScore(twoBallsHighScorePath);
 	int sixBallsHighScore = loadAimHighScore(sixBallsHighScorePath);
 	std::string authenticatedSessionToken = loadSessionToken(sessionTokenPath);
-	bool locallyActivated = !loadSessionToken(activationMarkerPath).empty();
+	const std::string activatedEmail = loadSessionToken(activationMarkerPath);
+	const std::string accountEmail = loadSessionToken(getApplicationDataDirectory() / "account.email");
+	bool locallyActivated = !activatedEmail.empty() && activatedEmail == accountEmail;
 	bool restoreAuthenticatedSession = false;
 	if (!authenticatedSessionToken.empty())
 	{
@@ -1933,7 +1998,6 @@ void main()
 	bool aimTaskRunning = false;
 	bool aimTaskFinished = false;
 	bool wasAimTrainerActive = false;
-	bool mustCompleteScenarioBeforeLeaving = false;
 	bool completedThreeBallsOnce = false;
 	bool completedTwoBallsOnce = false;
 	bool completedSixBallsOnce = false;
@@ -1971,7 +2035,7 @@ void main()
 			if (velocity.z > 0.0f) velocity.z = 0.0f;
 		}
 	};
-	std::array<Ball, 3> balls =
+	std::array<Ball, 1> balls =
 	{
 		Ball{ glm::vec3(0.0f, ballGroundY, 6.0f), glm::vec3(0.0f), true }
 	};
@@ -1986,7 +2050,7 @@ void main()
 		signUpForm.active = false;
 		signUpForm.complete = true;
 		gamePaused = false;
-		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+		platform::setCursorCaptured(true);
 	}
 	else if (restoreAuthenticatedSession)
 	{
@@ -1996,8 +2060,14 @@ void main()
 		signUpForm.email = loadSessionToken(getApplicationDataDirectory() / "account.email");
 		gamePaused = true;
 	}
-	if (!isAuthApiConfigured())
-		signUpForm.status = "SET API URL";
+	#ifdef AIMTRAINER_OFFLINE_BYPASS
+		signUpForm.active = false;
+		signUpForm.complete = true;
+		gamePaused = false;
+		platform::setCursorCaptured(true);
+	#endif
+		if (!isAuthApiConfigured())
+			signUpForm.status = "SET API URL";
 	bool showingControls = false;
 	bool showingRanks = false;
 	bool showingScenarioRanks = false;
@@ -2096,7 +2166,7 @@ void main()
 			}
 		}
 	};
-	double previousTime = glfwGetTime();
+	double previousTime = platform::getTime();
 	float physicsAccumulator = 0.0f;
 	double fpsWindowStart = previousTime;
 	double hudWindowStart = previousTime;
@@ -2109,24 +2179,24 @@ void main()
 	std::vector<std::uint8_t> adjustedAimTargetHitSound;
 	setWavVolume(jumpSound, adjustedJumpSound, audioVolume);
 	setWavVolume(aimTargetHitSound, adjustedAimTargetHitSound, audioVolume);
+#ifndef AIMTRAINER_ANDROID
 #ifndef _WIN32
 	if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
 	{
 		std::cerr << "Failed to initialize HTTPS support" << std::endl;
-		glfwTerminate();
+		platform::destroyWindow();
 		return -1;
 	}
-	if (!initializePortableAudio(jumpSound, aimTargetHitSound))
-		std::cerr << "Could not initialize audio playback." << std::endl;
 	setPortableAudioVolume(audioVolume);
+#endif
 #endif
 	float fpsCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
 	std::string fpsLabel = "FPS: 0";
 	std::vector<GLfloat> fpsVertices = buildFpsVertices(fpsLabel, framebufferWidth, framebufferHeight, fpsCellSize);
 	std::string speedLabel = "SPD: 0";
-	std::vector<GLfloat> speedVertices = buildFpsVertices(speedLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 7.0f * fpsCellSize);
+	std::vector<GLfloat> speedVertices = buildFpsVertices(speedLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 9.0f * fpsCellSize);
 	std::string aimTaskLabel = "T:30 H:0 B:" + std::to_string(aimHighScore);
-	std::vector<GLfloat> aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 14.0f * fpsCellSize);
+	std::vector<GLfloat> aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 18.0f * fpsCellSize);
 	fpsVertices.insert(fpsVertices.end(), speedVertices.begin(), speedVertices.end());
 	fpsVertices.insert(fpsVertices.end(), aimTaskVertices.begin(), aimTaskVertices.end());
 	GLint rankVertexStart = 0;
@@ -2139,10 +2209,13 @@ void main()
 	glBindBuffer(GL_ARRAY_BUFFER, fpsVBO);
 	glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(fpsVertices.size() * sizeof(GLfloat)), fpsVertices.data(), GL_DYNAMIC_DRAW);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
+#ifdef __ANDROID__
+	showAndroidDiagnosticColor(0.0f, 1.0f, 1.0f);
+#endif
 
-	while (!glfwWindowShouldClose(window))
+	while (!platform::shouldClose())
 	{
-		processInput(window);
+		processInput();
 		SignUpResult completedSignUpResult;
 		bool hasCompletedSignUpRequest = false;
 		{
@@ -2166,11 +2239,11 @@ void main()
 				{
 					signUpForm.activationMode = false;
 					signUpForm.activationKey.clear();
-					saveSessionToken(activationMarkerPath, "activated");
+					saveSessionToken(activationMarkerPath, signUpForm.email);
 					signUpForm.active = false;
 					signUpForm.complete = true;
 					gamePaused = false;
-					glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+					platform::setCursorCaptured(true);
 				}
 			}
 			else if (completedSignUpResult.confirmationPending)
@@ -2206,7 +2279,7 @@ void main()
 					signUpForm.complete = true;
 					gamePaused = false;
 					camera.mouseInitialized = false;
-					glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+					platform::setCursorCaptured(true);
 				}
 				else
 				{
@@ -2226,8 +2299,8 @@ void main()
 			}
 		}
 
-		double currentTime = glfwGetTime();
-		bool escapePressed = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+		double currentTime = platform::getTime();
+		bool escapePressed = platform::isKeyDown(platform::Key::Escape);
 		bool pauseStateChanged = false;
 		bool rankMenuPage = gamePaused && (showingRanks || showingScenarioRanks);
 		bool controlsMenuPage = gamePaused && showingControls;
@@ -2247,8 +2320,8 @@ void main()
 				showingRanks = false;
 				showingScenarioRanks = false;
 				camera.mouseInitialized = false;
-				glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-				if (aimTaskRunning)
+				platform::setCursorCaptured(true);				platform::setCursorCaptured(true);
+
 					aimTaskStartTime += currentTime - pauseStartedAt;
 			}
 			else
@@ -2257,7 +2330,7 @@ void main()
 				showingControls = false;
 				showingRanks = false;
 				showingScenarioRanks = false;
-				glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+				platform::setCursorCaptured(false);
 				pauseStartedAt = currentTime;
 				previousCameraPosition = camera.Position;
 			}
@@ -2265,24 +2338,20 @@ void main()
 		previousEscape = escapePressed;
 		rankMenuPage = gamePaused && (showingRanks || showingScenarioRanks);
 		controlsMenuPage = gamePaused && showingControls;
-		bool pauseMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+		bool pauseMousePressed = platform::isLeftMouseDown();
 		if (controlsMenuPage && !draggingSensitivity && !draggingAudioVolume && !draggingAimTargetSize &&
 			pauseMousePressed && !previousPauseMouse)
 		{
 			int sliderFramebufferWidth = 0;
 			int sliderFramebufferHeight = 0;
-			int sliderWindowWidth = 0;
-			int sliderWindowHeight = 0;
-			glfwGetFramebufferSize(window, &sliderFramebufferWidth, &sliderFramebufferHeight);
-			glfwGetWindowSize(window, &sliderWindowWidth, &sliderWindowHeight);
+			platform::getFramebufferSize(sliderFramebufferWidth, sliderFramebufferHeight);
 			double cursorX = 0.0;
 			double cursorY = 0.0;
-			glfwGetCursorPos(window, &cursorX, &cursorY);
-			if (sliderWindowWidth > 0 && sliderWindowHeight > 0 && sliderFramebufferWidth > 0 && sliderFramebufferHeight > 0)
+			platform::getCursorPosition(cursorX, cursorY);
+			if (sliderFramebufferWidth > 0 && sliderFramebufferHeight > 0)
 			{
-				float clickX = static_cast<float>(
-					cursorX * static_cast<double>(sliderFramebufferWidth) / static_cast<double>(sliderWindowWidth));
-				float clickY = static_cast<float>(cursorY * sliderFramebufferHeight / sliderWindowHeight);
+				float clickX = static_cast<float>(cursorX);
+				float clickY = static_cast<float>(cursorY);
 				float cellSize = std::max(2.0f, static_cast<float>(sliderFramebufferHeight) / 300.0f);
 				float sliderLeft = static_cast<float>(sliderFramebufferWidth) * 0.5f - 55.0f * cellSize;
 				float sliderRight = static_cast<float>(sliderFramebufferWidth) * 0.5f + 55.0f * cellSize;
@@ -2314,17 +2383,13 @@ void main()
 		{
 			int sliderFramebufferWidth = 0;
 			int sliderFramebufferHeight = 0;
-			int sliderWindowWidth = 0;
-			int sliderWindowHeight = 0;
-			glfwGetFramebufferSize(window, &sliderFramebufferWidth, &sliderFramebufferHeight);
-			glfwGetWindowSize(window, &sliderWindowWidth, &sliderWindowHeight);
+			platform::getFramebufferSize(sliderFramebufferWidth, sliderFramebufferHeight);
 			double cursorX = 0.0;
 			double cursorY = 0.0;
-			glfwGetCursorPos(window, &cursorX, &cursorY);
-			if (sliderWindowWidth > 0 && sliderFramebufferWidth > 0 && sliderFramebufferHeight > 0)
+			platform::getCursorPosition(cursorX, cursorY);
+			if (sliderFramebufferWidth > 0 && sliderFramebufferHeight > 0)
 			{
-				float clickX = static_cast<float>(
-					cursorX * static_cast<double>(sliderFramebufferWidth) / static_cast<double>(sliderWindowWidth));
+				float clickX = static_cast<float>(cursorX);
 				float cellSize = std::max(2.0f, static_cast<float>(sliderFramebufferHeight) / 300.0f);
 				float sliderLeft = static_cast<float>(sliderFramebufferWidth) * 0.5f - 55.0f * cellSize;
 				float sliderWidth = 110.0f * cellSize;
@@ -2360,17 +2425,14 @@ void main()
 		{
 			int clickFramebufferWidth = 0;
 			int clickFramebufferHeight = 0;
-			int clickWindowWidth = 0;
-			int clickWindowHeight = 0;
-			glfwGetFramebufferSize(window, &clickFramebufferWidth, &clickFramebufferHeight);
-			glfwGetWindowSize(window, &clickWindowWidth, &clickWindowHeight);
+			platform::getFramebufferSize(clickFramebufferWidth, clickFramebufferHeight);
 			double cursorX = 0.0;
 			double cursorY = 0.0;
-			glfwGetCursorPos(window, &cursorX, &cursorY);
-			if (clickWindowWidth > 0 && clickWindowHeight > 0 && clickFramebufferWidth > 0 && clickFramebufferHeight > 0)
+			platform::getCursorPosition(cursorX, cursorY);
+			if (clickFramebufferWidth > 0 && clickFramebufferHeight > 0)
 			{
-				float clickX = static_cast<float>(cursorX * clickFramebufferWidth / clickWindowWidth);
-				float clickY = static_cast<float>(cursorY * clickFramebufferHeight / clickWindowHeight);
+				float clickX = static_cast<float>(cursorX);
+				float clickY = static_cast<float>(cursorY);
 				float menuCellSize = std::max(2.0f, static_cast<float>(clickFramebufferHeight) / 300.0f);
 				if (signUpForm.active)
 				{
@@ -2470,31 +2532,31 @@ void main()
 							clickY >= top - 5.0f * menuCellSize && clickY <= top + 12.0f * menuCellSize;
 					};
 					float pauseTop = static_cast<float>(clickFramebufferHeight) * 0.30f;
-					if (buttonHit("RESUME", pauseTop + 10.0f * menuCellSize, 1.5f))
+					if (buttonHit("RESUME", pauseTop + 18.0f * menuCellSize, 1.5f))
 					{
 						gamePaused = false;
 						showingControls = false;
 						showingRanks = false;
 						showingScenarioRanks = false;
 						camera.mouseInitialized = false;
-						glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+						platform::setCursorCaptured(true);
 						if (aimTaskRunning)
 							aimTaskStartTime += currentTime - pauseStartedAt;
 						pauseStateChanged = true;
 					}
-					else if (buttonHit("SCENARIO RANKS", pauseTop + 60.0f * menuCellSize, 1.5f))
+					else if (buttonHit("SCENARIO RANKS", pauseTop + 84.0f * menuCellSize, 1.5f))
 					{
 						showingScenarioRanks = true;
 						showingRanks = showingControls = false;
 						pauseStateChanged = true;
 					}
-					else if (buttonHit("RANKS", pauseTop + 40.0f * menuCellSize, 1.5f))
+					else if (buttonHit("RANKS", pauseTop + 62.0f * menuCellSize, 1.5f))
 					{
 						showingRanks = true;
 						showingControls = showingScenarioRanks = false;
 						pauseStateChanged = true;
 					}
-					else if (buttonHit("CONTROLS", pauseTop + 20.0f * menuCellSize, 1.5f))
+					else if (buttonHit("CONTROLS", pauseTop + 40.0f * menuCellSize, 1.5f))
 					{
 						showingControls = !showingControls;
 						showingRanks = showingScenarioRanks = false;
@@ -2502,7 +2564,7 @@ void main()
 					}
 					else if (buttonHit("EXIT", pauseTop + 124.0f * menuCellSize, 1.5f))
 					{
-						glfwSetWindowShouldClose(window, GLFW_TRUE);
+						platform::requestClose();
 					}
 				}
 			}
@@ -2527,9 +2589,9 @@ void main()
 						std::lock_guard<std::mutex> resultLock(signUpResultMutex);
 						signUpResultReady = false;
 					}
-					signUpAuthThread = std::thread([email = std::move(email), activationKey = std::move(activationKey)]()
+					signUpAuthThread = std::thread([email = std::move(email), activationKey = std::move(activationKey), sessionToken = authenticatedSessionToken]()
 					{
-						SignUpResult requestResult = sendActivationApiRequest(email, activationKey);
+						SignUpResult requestResult = sendActivationApiRequest(email, activationKey, sessionToken);
 						std::lock_guard<std::mutex> resultLock(signUpResultMutex);
 						signUpResult = std::move(requestResult);
 						signUpResultReady = true;
@@ -2625,12 +2687,12 @@ void main()
 			hudWindowStart = currentTime;
 			float horizontalSpeed = glm::length(glm::vec2(camera.horizontalVelocity.x, camera.horizontalVelocity.z));
 			speedLabel = "SPD: " + std::to_string(static_cast<int>(std::round(horizontalSpeed)));
-			glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+			platform::getFramebufferSize(framebufferWidth, framebufferHeight);
 			fpsCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
 			fpsVertices = (signUpForm.active || rankMenuPage || controlsMenuPage)
 				? std::vector<GLfloat>()
 				: buildFpsVertices(fpsLabel, framebufferWidth, framebufferHeight, fpsCellSize);
-			speedVertices = buildFpsVertices(speedLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 7.0f * fpsCellSize);
+			speedVertices = buildFpsVertices(speedLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 9.0f * fpsCellSize);
 			int aimTaskSecondsRemaining = 30;
 			if (aimTaskFinished)
 				aimTaskSecondsRemaining = 0;
@@ -2640,17 +2702,29 @@ void main()
 				" H:" + std::to_string(aimTaskScore) +
 			" B:" + std::to_string(sixBallsScenario ? sixBallsHighScore :
 				(twoBallsScenario ? twoBallsHighScore : aimHighScore));
-			aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 14.0f * fpsCellSize);
+			aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 18.0f * fpsCellSize);
 			if (!signUpForm.active && !rankMenuPage && !controlsMenuPage)
 			{
 				fpsVertices.insert(fpsVertices.end(), speedVertices.begin(), speedVertices.end());
 				fpsVertices.insert(fpsVertices.end(), aimTaskVertices.begin(), aimTaskVertices.end());
 				std::vector<GLfloat> rankVertices = buildFpsVertices(
 					"R: " + std::string(getCurrentAimRank().name),
-					framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 21.0f * fpsCellSize);
+					framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 27.0f * fpsCellSize);
 				rankVertexStart = static_cast<GLint>(fpsVertices.size() / 2);
 				rankVertexCount = static_cast<GLsizei>(rankVertices.size() / 2);
 				fpsVertices.insert(fpsVertices.end(), rankVertices.begin(), rankVertices.end());
+#ifdef __ANDROID__
+				const std::array<std::string, 3> bestScoreLabels = {
+					"A: " + std::to_string(aimHighScore),
+					"2B: " + std::to_string(twoBallsHighScore),
+					"6B: " + std::to_string(sixBallsHighScore)
+				};
+				for (std::size_t labelIndex = 0; labelIndex < bestScoreLabels.size(); ++labelIndex)
+				{
+					std::vector<GLfloat> bestScoreVertices = buildFpsVertices(bestScoreLabels[labelIndex], framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + (36.0f + 9.0f * static_cast<float>(labelIndex)) * fpsCellSize);
+					fpsVertices.insert(fpsVertices.end(), bestScoreVertices.begin(), bestScoreVertices.end());
+				}
+#endif
 			}
 			int scenarioHighScore = sixBallsScenario ? sixBallsHighScore :
 				(twoBallsScenario ? twoBallsHighScore : aimHighScore);
@@ -2799,7 +2873,6 @@ void main()
 			{
 				const std::string pauseLabel = "PAUSED";
 				float pauseCellSize = fpsCellSize * 2.0f;
-				float pauseHeight = 5.0f * pauseCellSize;
 				float pauseTop = static_cast<float>(framebufferHeight) * 0.30f;
 				auto appendCenteredPauseText = [&](const std::string& text, float cellSize, float top)
 				{
@@ -2810,10 +2883,10 @@ void main()
 					fpsVertices.insert(fpsVertices.end(), textVertices.begin(), textVertices.end());
 				};
 				appendCenteredPauseText(pauseLabel, pauseCellSize, pauseTop);
-				appendCenteredPauseText("RESUME", fpsCellSize * 1.5f, pauseTop + 10.0f * fpsCellSize);
-				appendCenteredPauseText("CONTROLS", fpsCellSize * 1.5f, pauseTop + pauseHeight + 10.0f * fpsCellSize);
-				appendCenteredPauseText("RANKS", fpsCellSize * 1.5f, pauseTop + 40.0f * fpsCellSize);
-				appendCenteredPauseText("SCENARIO RANKS", fpsCellSize * 1.5f, pauseTop + 60.0f * fpsCellSize);
+				appendCenteredPauseText("RESUME", fpsCellSize * 1.5f, pauseTop + 18.0f * fpsCellSize);
+				appendCenteredPauseText("CONTROLS", fpsCellSize * 1.5f, pauseTop + 40.0f * fpsCellSize);
+				appendCenteredPauseText("RANKS", fpsCellSize * 1.5f, pauseTop + 62.0f * fpsCellSize);
+				appendCenteredPauseText("SCENARIO RANKS", fpsCellSize * 1.5f, pauseTop + 84.0f * fpsCellSize);
 				appendCenteredPauseText("EXIT", fpsCellSize * 1.5f, pauseTop + 124.0f * fpsCellSize);
 			}
 			if (controlsMenuPage)
@@ -2834,7 +2907,7 @@ void main()
 					"X/Z BALL", "F FULLSCREEN", "ESC RESUME"
 				};
 				float controlRowTop = static_cast<float>(framebufferHeight) * 0.23f;
-				float controlRowSpacing = settingsCellSize * 4.5f;
+				float controlRowSpacing = settingsCellSize * 5.5f;
 				for (std::size_t controlIndex = 0; controlIndex < controlsText.size(); ++controlIndex)
 					appendCenteredSettingsText(controlsText[controlIndex], settingsCellSize,
 						controlRowTop + static_cast<float>(controlIndex) * controlRowSpacing);
@@ -2886,7 +2959,7 @@ void main()
 					sixBallsScenario ? "> 4 SIX BALLS" : "  4 SIX BALLS"
 				};
 				float selectorCellSize = fpsCellSize;
-				float selectorTop = static_cast<float>(framebufferHeight) * 0.08f;
+				float selectorTop = 16.0f + 24.0f * fpsCellSize;
 				float selectorRowSpacing = 6.0f * selectorCellSize;
 				for (std::size_t selectorIndex = 0; selectorIndex < scenarioLabels.size(); ++selectorIndex)
 				{
@@ -2894,7 +2967,7 @@ void main()
 					std::vector<GLfloat> vertices = buildFpsVertices(scenarioLabels[selectorIndex],
 						framebufferWidth, framebufferHeight, selectorCellSize,
 						selectorTop + static_cast<float>(selectorIndex) * selectorRowSpacing,
-						(static_cast<float>(framebufferWidth) - labelWidth) * 0.5f);
+						static_cast<float>(framebufferWidth) - labelWidth - 16.0f);
 					fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
 				}
 			}
@@ -2936,9 +3009,9 @@ void main()
 		}
 
 		if (!gamePaused)
-			camera.Inputs(window, true);
+			camera.Inputs(true);
 
-		bool cameraJumpPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+		bool cameraJumpPressed = !gamePaused && platform::isKeyDown(platform::Key::Space);
 		jumpBufferRemaining = cameraJumpPressed
 			? 0.12f
 			: jumpBufferRemaining;
@@ -2979,10 +3052,10 @@ void main()
 			glm::vec3 cameraForward(std::cos(yawRadians), 0.0f, std::sin(yawRadians));
 			glm::vec3 cameraRight(-std::sin(yawRadians), 0.0f, std::cos(yawRadians));
 			glm::vec3 wishDirection(0.0f);
-			bool forwardPressed = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
-			bool backwardPressed = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
-			bool leftPressed = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS;
-			bool rightPressed = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS;
+			bool forwardPressed = platform::isKeyDown(platform::Key::W);
+			bool backwardPressed = platform::isKeyDown(platform::Key::S);
+			bool leftPressed = platform::isKeyDown(platform::Key::A);
+			bool rightPressed = platform::isKeyDown(platform::Key::D);
 			if (forwardPressed) wishDirection += cameraForward;
 			if (backwardPressed) wishDirection -= cameraForward;
 			if (leftPressed) wishDirection -= cameraRight;
@@ -3057,17 +3130,17 @@ void main()
 			physicsAccumulator -= step;
 		}
 
-		bool xPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS;
+		bool xPressed = !gamePaused && platform::isKeyDown(platform::Key::X);
 		if (xPressed && !previousX)
 			activeBall = (activeBall + 1) % static_cast<int>(balls.size());
 		previousX = xPressed;
-		bool zPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
+		bool zPressed = !gamePaused && platform::isKeyDown(platform::Key::Z);
 		if (zPressed && !previousZ)
 			activeBall = (activeBall + static_cast<int>(balls.size()) - 1) % static_cast<int>(balls.size());
 		previousZ = zPressed;
-		bool twoBallsPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS;
-		bool threeBallsPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS;
-		bool sixBallsPressed = !gamePaused && glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS;
+		bool twoBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num2);
+		bool threeBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num1);
+		bool sixBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num4);
 		if (twoBallsPressed && !previousTwoBallsKey)
 		{
 			twoBallsScenario = true;
@@ -3151,8 +3224,6 @@ void main()
 			aimTaskStartTime = currentTime;
 			if (sixBallsScenario)
 				randomizeSixBallTargets();
-			mustCompleteScenarioBeforeLeaving = !(sixBallsScenario ? completedSixBallsOnce :
-				(twoBallsScenario ? completedTwoBallsOnce : completedThreeBallsOnce));
 		}
 		if (!gamePaused)
 			wasAimTrainerActive = aimTrainerActive;
@@ -3185,7 +3256,6 @@ void main()
 				completedTwoBallsOnce = true;
 			else
 				completedThreeBallsOnce = true;
-			mustCompleteScenarioBeforeLeaving = false;
 			int& scenarioHighScore = sixBallsScenario ? sixBallsHighScore :
 				(twoBallsScenario ? twoBallsHighScore : aimHighScore);
 			const fs::path& scenarioHighScorePath = sixBallsScenario ? sixBallsHighScorePath :
@@ -3226,27 +3296,23 @@ void main()
 		}
 		camera.updateMatrix(45.0f, 0.1f, 500.0f);
 
-		bool leftMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+		bool leftMousePressed = platform::isLeftMouseDown();
 		bool scenarioSelectorClicked = false;
 		if (!gamePaused && aimTrainerActive && leftMousePressed && !previousLeftMouse)
 		{
-			int selectorWindowWidth = 0;
-			int selectorWindowHeight = 0;
 			int selectorFramebufferWidth = 0;
 			int selectorFramebufferHeight = 0;
-			glfwGetWindowSize(window, &selectorWindowWidth, &selectorWindowHeight);
-			glfwGetFramebufferSize(window, &selectorFramebufferWidth, &selectorFramebufferHeight);
+			platform::getFramebufferSize(selectorFramebufferWidth, selectorFramebufferHeight);
 			double cursorX = 0.0;
 			double cursorY = 0.0;
-			glfwGetCursorPos(window, &cursorX, &cursorY);
-			if (selectorWindowWidth > 0 && selectorWindowHeight > 0 &&
-				selectorFramebufferWidth > 0 && selectorFramebufferHeight > 0)
+			platform::getCursorPosition(cursorX, cursorY);
+			if (selectorFramebufferWidth > 0 && selectorFramebufferHeight > 0)
 			{
-				float clickX = static_cast<float>(cursorX * selectorFramebufferWidth / selectorWindowWidth);
-				float clickY = static_cast<float>(cursorY * selectorFramebufferHeight / selectorWindowHeight);
+				float clickX = static_cast<float>(cursorX);
+				float clickY = static_cast<float>(cursorY);
 				float selectorCellSize = fpsCellSize;
 				float selectorTop = static_cast<float>(selectorFramebufferHeight) * 0.08f;
-				float selectorRowSpacing = 6.0f * selectorCellSize;
+				float selectorRowSpacing = 9.0f * selectorCellSize;
 				int clickedRow = static_cast<int>(std::round((clickY - selectorTop) / selectorRowSpacing));
 				float clickedRowTop = selectorTop + static_cast<float>(clickedRow) * selectorRowSpacing;
 				const std::array<std::string, 3> selectorLabels = {
@@ -3343,7 +3409,7 @@ void main()
 		glm::mat4 skyboxProjection = glm::perspective(glm::radians(45.0f),
 			static_cast<float>(camera.width) / static_cast<float>(camera.height), 0.1f, 500.0f);
 		glm::mat4 skyboxView = glm::lookAt(glm::vec3(0.0f), camera.Orientation, camera.Up);
-		float dayCyclePhase = static_cast<float>(std::fmod(glfwGetTime() - dayNightStartTime, dayNightCycleSeconds) / dayNightCycleSeconds);
+		float dayCyclePhase = static_cast<float>(std::fmod(platform::getTime() - dayNightStartTime, dayNightCycleSeconds) / dayNightCycleSeconds);
 		float sunHeight = std::sin(dayCyclePhase * 6.2831853f - 1.5707963f);
 		float dayAmount = glm::smoothstep(-0.18f, 0.22f, sunHeight);
 		glm::vec3 sunDirection = glm::normalize(glm::vec3(std::cos(dayCyclePhase * 6.2831853f), sunHeight, 0.25f));
@@ -3357,7 +3423,7 @@ void main()
 		glUseProgram(skyboxProgram);
 		glUniformMatrix4fv(skyboxMatrixLocation, 1, GL_FALSE, glm::value_ptr(skyboxProjection * skyboxView));
 		glUniform1f(skyboxDayAmountLocation, dayAmount);
-		glUniform1f(skyboxCloudTimeLocation, static_cast<float>(glfwGetTime() - dayNightStartTime));
+		glUniform1f(skyboxCloudTimeLocation, static_cast<float>(platform::getTime() - dayNightStartTime));
 		glBindVertexArray(skyboxVAO);
 		glDrawArrays(GL_TRIANGLES, 0, 36);
 		glBindVertexArray(0);
@@ -3438,7 +3504,7 @@ void main()
 		glUseProgram(crosshairProgram);
 		int crosshairWidth = 0;
 		int crosshairHeight = 0;
-		glfwGetFramebufferSize(window, &crosshairWidth, &crosshairHeight);
+		platform::getFramebufferSize(crosshairWidth, crosshairHeight);
 		float crosshairAspect = crosshairHeight > 0
 			? static_cast<float>(crosshairWidth) / static_cast<float>(crosshairHeight)
 			: 1.0f;
@@ -3476,8 +3542,8 @@ void main()
 		glDisable(GL_BLEND);
 		glEnable(GL_DEPTH_TEST);
 
-		glfwSwapBuffers(window);
-		glfwPollEvents();
+		platform::swapBuffers();
+		platform::pollEvents();
 	};
 
 	if (signUpAuthThread.joinable())
@@ -3497,71 +3563,30 @@ void main()
 	glDeleteBuffers(1, &crosshairVBO);
 	glDeleteVertexArrays(1, &crosshairVAO);
 	glDeleteProgram(crosshairProgram);
-	glfwDestroyWindow(window);
-	glfwTerminate();
+	platform::destroyWindow();
 	return 0;
 };
 
-void processInput(GLFWwindow *window)
+void processInput()
 {
-	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS)
-		glfwSetWindowShouldClose(window, true);
-
 	static bool fullscreenWasPressed = false;
 	static int windowedX = 100;
 	static int windowedY = 100;
 	static int windowedWidth = defaultWidth;
 	static int windowedHeight = defaultHeight;
 
-	bool fullscreenPressed = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
+	bool fullscreenPressed = platform::isKeyDown(platform::Key::F);
 	if (fullscreenPressed && !fullscreenWasPressed)
-	{
-		if (glfwGetWindowMonitor(window) != nullptr)
-		{
-			glfwSetWindowMonitor(
-				window,
-				nullptr,
-				windowedX,
-				windowedY,
-				windowedWidth,
-				windowedHeight,
-				0
-			);
-		}
-		else
-		{
-			glfwGetWindowPos(window, &windowedX, &windowedY);
-			glfwGetWindowSize(window, &windowedWidth, &windowedHeight);
-
-			GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-			const GLFWvidmode* mode = monitor ? glfwGetVideoMode(monitor) : nullptr;
-			if (mode != nullptr)
-			{
-				glfwSetWindowMonitor(
-					window,
-					monitor,
-					0,
-					0,
-					mode->width,
-					mode->height,
-					mode->refreshRate
-				);
-			}
-		}
-	}
+		platform::toggleFullscreen();
 	fullscreenWasPressed = fullscreenPressed;
 };
 
-void framebuffer_size_callback(GLFWwindow* window, int width, int height)
+void framebuffer_size_callback(int width, int height)
 {
-    glViewport(0, 0, width, height);
-	if (width > 0 && height > 0)
+	glViewport(0, 0, width, height);
+	if (width > 0 && height > 0 && cameraForFramebufferCallback != nullptr)
 	{
-		Camera* camera = static_cast<Camera*>(glfwGetWindowUserPointer(window));
-		if (camera != nullptr)
-		{
-			camera->width = width;
-			camera->height = height;
-		}
+		cameraForFramebufferCallback->width = width;
+		cameraForFramebufferCallback->height = height;
 	}
 }

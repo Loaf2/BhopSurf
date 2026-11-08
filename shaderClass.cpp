@@ -1,5 +1,9 @@
 #include"shaderClass.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 std::string get_file_contents(const char* filename)
 {
 	std::ifstream in(filename, std::ios::binary);
@@ -20,6 +24,15 @@ Shader::Shader(const char* vertexFile, const char* fragmentFile)
 {
 	std::string vertexCode = get_file_contents(vertexFile);
 	std::string fragmentCode = get_file_contents(fragmentFile);
+#ifdef __ANDROID__
+	auto toEs = [](std::string& code, bool isFragment)
+	{
+		const size_t versionEnd = code.find('\n');
+		code = "#version 300 es\n" + std::string(isFragment ? "precision mediump float;\n" : "") + (versionEnd == std::string::npos ? std::string() : code.substr(versionEnd + 1));
+	};
+	toEs(vertexCode, false);
+	toEs(fragmentCode, true);
+#endif
 
 	const char* vertexSource = vertexCode.c_str();
 	const char* fragmentSource = fragmentCode.c_str();
@@ -66,6 +79,9 @@ void Shader::compileErrors(unsigned int shader, const char* type)
 		{
 			glGetShaderInfoLog(shader, 1024, NULL, infoLog);
 			std::cout << "SHADER_COMPILATION_ERROR for:" << type << "\n" << infoLog << std::endl;
+#ifdef __ANDROID__
+			__android_log_print(ANDROID_LOG_ERROR, "AimTrainer", "SHADER_COMPILATION_ERROR for %s: %s", type, infoLog);
+#endif
 		}
 	}
 	else
@@ -75,6 +91,9 @@ void Shader::compileErrors(unsigned int shader, const char* type)
 		{
 			glGetProgramInfoLog(shader, 1024, NULL, infoLog);
 			std::cout << "SHADER_LINKING_ERROR for:" << type << "\n" << infoLog << std::endl;
+#ifdef __ANDROID__
+			__android_log_print(ANDROID_LOG_ERROR, "AimTrainer", "SHADER_LINKING_ERROR for %s: %s", type, infoLog);
+#endif
 		}
 	}
 }

@@ -44,7 +44,7 @@ vec4 pointLight()
 	float specularLight = 0.50f;
 	vec3 viewDirection = normalize(camPos - crntPos);
 	vec3 reflectionDirection = reflect(-lightDirection, normal);
-	float specAmount = pow(max(dot(viewDirection, reflectionDirection), 0.0f), 16);
+	float specAmount = pow(max(dot(viewDirection, reflectionDirection), 0.0f), 16.0f);
 	float specular = specAmount * specularLight;
 
 	return (texture(diffuse0, texCoord) * (diffuse * inten + ambient) + texture(specular0, texCoord).r * specular * inten) * lightColor;
@@ -61,7 +61,7 @@ vec4 direcLight()
 	float specularLight = 0.50f;
 	vec3 viewDirection = normalize(camPos - crntPos);
 	vec3 reflectionDirection = reflect(-lightDirection, normal);
-	float specAmount = pow(max(dot(viewDirection, reflectionDirection), 0.0f), 16);
+	float specAmount = pow(max(dot(viewDirection, reflectionDirection), 0.0f), 16.0f);
 	float specular = specAmount * specularLight;
 
 	vec3 dayNightLighting = ambientColor + diffuse * max(lightColor.rgb, vec3(0.0));
@@ -86,7 +86,7 @@ vec4 spotLight()
 	float specularLight = 0.50f;
 	vec3 viewDirection = normalize(camPos - crntPos);
 	vec3 reflectionDirection = reflect(-lightDirection, normal);
-	float specAmount = pow(max(dot(viewDirection, reflectionDirection), 0.0f), 16);
+	float specAmount = pow(max(dot(viewDirection, reflectionDirection), 0.0f), 16.0f);
 	float specular = specAmount * specularLight;
 
 

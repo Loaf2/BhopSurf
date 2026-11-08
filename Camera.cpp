@@ -26,21 +26,21 @@ void Camera::Matrix(Shader& shader, const char* uniform)
 
 
 
-void Camera::Inputs(GLFWwindow* window, bool allowMovement)
+void Camera::Inputs(bool allowMovement)
 {
 	if (allowMovement)
 	{
-		if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
+		if (platform::isKeyDown(platform::Key::LeftShift))
 			speed = 42.0f;
 		else
 			speed = 12.0f;
 	}
 
-	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	platform::setCursorCaptured(true);
 
 	double mouseX = 0.0;
 	double mouseY = 0.0;
-	glfwGetCursorPos(window, &mouseX, &mouseY);
+	platform::getCursorPosition(mouseX, mouseY);
 
 	if (!mouseInitialized)
 	{
