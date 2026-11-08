@@ -2965,7 +2965,7 @@ void main()
 			bool trainerHudVisible = !gamePaused &&
 				hudPlayerBallPosition.x >= aimTrainerMinX && hudPlayerBallPosition.x <= aimTrainerMaxX &&
 				hudPlayerBallPosition.z >= aimTrainerMinZ && hudPlayerBallPosition.z <= aimTrainerMaxZ;
-			if (trainerHudVisible && !twoBallsScenario && !sixBallsScenario)
+			if (trainerHudVisible)
 			{
 				const std::array<std::string, 3> scenarioLabels = {
 					!sixBallsScenario && !twoBallsScenario ? "> 1 THREE BALLS" : "  1 THREE BALLS",
