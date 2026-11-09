@@ -25,7 +25,7 @@ void Camera::Matrix(Shader& shader, const char* uniform)
 
 
 
-void Camera::Inputs(bool allowMovement)
+void Camera::Inputs(bool allowMovement, bool allowLook)
 {
 	if (allowMovement)
 	{
@@ -35,13 +35,11 @@ void Camera::Inputs(bool allowMovement)
 			speed = 12.0f;
 	}
 
-	platform::setCursorCaptured(true);
-
 	double mouseX = 0.0;
 	double mouseY = 0.0;
 	platform::getLookPosition(mouseX, mouseY);
 
-	if (!mouseInitialized)
+	if (!allowLook || !mouseInitialized)
 	{
 		lastMouseX = mouseX;
 		lastMouseY = mouseY;

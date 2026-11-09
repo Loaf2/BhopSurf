@@ -2197,7 +2197,6 @@ void main()
 	const fs::path trackingMediumHighScorePath = getTrackingMediumHighScorePath();
 	const fs::path sessionTokenPath = getSessionTokenPath();
 	const fs::path activationMarkerPath = getActivationMarkerPath();
-	constexpr double aimTaskRetryCooldownSeconds = 1.0;
 	int aimTaskScore = 0;
 	int aimHighScore = loadAimHighScore(aimHighScorePath);
 	int twoBallsHighScore = loadAimHighScore(twoBallsHighScorePath);
@@ -2297,10 +2296,8 @@ void main()
 		{ "STELLAR II", 265, glm::vec4(0.74f, 0.92f, 1.0f, 1.0f) },
 		{ "STELLAR III", 280, glm::vec4(0.74f, 0.92f, 1.0f, 1.0f) }
 	}};
-	auto getCurrentAimRank = [&]() -> const AimRank&
+	auto getAimRankForScore = [&](int scenarioHighScore) -> const AimRank&
 	{
-		int scenarioHighScore = trackingScenario ? (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore)) : (sixBallsScenario ? sixBallsHighScore :
-			(twoBallsScenario ? twoBallsHighScore : aimHighScore));
 		const AimRank* rank = &aimRanks.front();
 		for (const AimRank& candidate : aimRanks)
 		{
@@ -2310,6 +2307,41 @@ void main()
 		}
 		return *rank;
 	};
+	auto getScenarioHighScore = [&](std::size_t scenarioIndex) -> int
+	{
+		switch (scenarioIndex)
+		{
+		case 0: return aimHighScore;
+		case 1: return twoBallsHighScore;
+		case 2: return sixBallsHighScore;
+		case 3: return trackingHighScore;
+		case 4: return trackingFarHighScore;
+		default: return trackingMediumHighScore;
+		}
+	};
+	auto getCurrentScenarioIndex = [&]() -> std::size_t
+	{
+		if (trackingScenario)
+			return trackingMediumScenario ? 5 : (trackingFarScenario ? 4 : 3);
+		if (sixBallsScenario)
+			return 2;
+		return twoBallsScenario ? 1 : 0;
+	};
+	auto getCurrentAimRank = [&]() -> const AimRank&
+	{
+		return getAimRankForScore(getScenarioHighScore(getCurrentScenarioIndex()));
+	};
+	auto getScenarioMenuRowText = [&](std::size_t scenarioIndex) -> std::string
+	{
+		return leaderboardScenarioNames[scenarioIndex] + std::string("  ") +
+			getAimRankForScore(getScenarioHighScore(scenarioIndex)).name + std::string("  PLAY");
+	};
+	auto getScenarioMenuRowLeft = [](const std::string& rowText, int width, float cellSize) -> float
+	{
+		return (static_cast<float>(width) - (static_cast<float>(rowText.size()) * 4.0f - 1.0f) * cellSize) * 0.5f;
+	};
+	bool scenarioMenuCursorFree = false;
+	bool scenarioListHidden = false;
 	bool aimTaskRunning = false;
 	bool aimTaskFinished = false;
 	bool wasAimTrainerActive = false;
@@ -3385,27 +3417,19 @@ void main()
 			bool trainerHudVisible = !gamePaused &&
 				hudPlayerBallPosition.x >= aimTrainerMinX && hudPlayerBallPosition.x <= aimTrainerMaxX &&
 				hudPlayerBallPosition.z >= aimTrainerMinZ && hudPlayerBallPosition.z <= aimTrainerMaxZ;
-			if (trainerHudVisible)
+			if (trainerHudVisible && !scenarioListHidden)
 			{
-				const std::array<std::string, 6> scenarioLabels = {
-					!sixBallsScenario && !twoBallsScenario && !trackingScenario ? "> 1 THREESHOT" : "  1 THREESHOT",
-					twoBallsScenario ? "> 2 DUO SPEED CLICK" : "  2 DUO SPEED CLICK",
-					sixBallsScenario ? "> 3 SIX COINS" : "  3 SIX COINS",
-					trackingScenario && !trackingFarScenario && !trackingMediumScenario ? "> 4 SKY TRACK CLOSE EASY" : "  4 SKY TRACK CLOSE EASY",
-					trackingScenario && trackingFarScenario ? "> 5 SKY TRACK FAR EASY" : "  5 SKY TRACK FAR EASY",
-					trackingScenario && trackingMediumScenario ? "> 6 SKY TRACK CLOSE MEDIUM" : "  6 SKY TRACK CLOSE MEDIUM"
-				};
 				float selectorCellSize = fpsCellSize;
-				float selectorTop = 16.0f + 24.0f * fpsCellSize;
 				float selectorRowSpacing = 6.0f * selectorCellSize;
-				for (std::size_t selectorIndex = 0; selectorIndex < scenarioLabels.size(); ++selectorIndex)
+				float selectorTop = static_cast<float>(framebufferHeight) * 0.5f - 17.5f * selectorCellSize;
+				for (std::size_t selectorIndex = 0; selectorIndex < leaderboardScenarioNames.size(); ++selectorIndex)
 				{
-					float labelWidth = static_cast<float>(scenarioLabels[selectorIndex].size() * 4 - 1) * selectorCellSize;
-					std::vector<GLfloat> vertices = buildFpsVertices(scenarioLabels[selectorIndex],
-						framebufferWidth, framebufferHeight, selectorCellSize,
-						selectorTop + static_cast<float>(selectorIndex) * selectorRowSpacing,
-						static_cast<float>(framebufferWidth) - labelWidth - 16.0f);
-					fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
+					float rowTop = selectorTop + static_cast<float>(selectorIndex) * selectorRowSpacing;
+					std::string rowText = getScenarioMenuRowText(selectorIndex);
+					float rowLeft = getScenarioMenuRowLeft(rowText, framebufferWidth, selectorCellSize);
+					std::vector<GLfloat> rowVertices = buildFpsVertices(rowText, framebufferWidth, framebufferHeight, selectorCellSize,
+						rowTop, rowLeft);
+					fpsVertices.insert(fpsVertices.end(), rowVertices.begin(), rowVertices.end());
 				}
 			}
 			if (rankMenuPage)
@@ -3484,7 +3508,7 @@ void main()
 		}
 
 		if (!gamePaused)
-			camera.Inputs(true);
+			camera.Inputs(true, !scenarioMenuCursorFree);
 
 		playerMovementLocked = aimTaskRunning;
 		bool cameraJumpPressed = !gamePaused && !playerMovementLocked && platform::isKeyDown(platform::Key::Space);
@@ -3630,87 +3654,7 @@ void main()
 		if (zPressed && !previousZ)
 			activeBall = (activeBall + static_cast<int>(balls.size()) - 1) % static_cast<int>(balls.size());
 		previousZ = zPressed;
-		bool twoBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num2);
-		bool threeBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num1);
-		bool sixBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num3);
-		bool trackingPressed = !gamePaused && platform::isKeyDown(platform::Key::Num4);
-		bool trackingFarPressed = !gamePaused && platform::isKeyDown(platform::Key::Num5);
-		bool trackingMediumPressed = !gamePaused && platform::isKeyDown(platform::Key::Num6);
-		if (twoBallsPressed && !previousTwoBallsKey)
-		{
-			twoBallsScenario = true;
-			sixBallsScenario = false;
-			trackingScenario = false;
-			trackingFarScenario = false;
-			trackingMediumScenario = false;
-			aimTaskRunning = false;
-			aimTaskFinished = false;
-			aimTaskScore = 0;
-		}
-		else if (threeBallsPressed && !previousThreeBallsKey)
-		{
-			twoBallsScenario = false;
-			sixBallsScenario = false;
-			trackingScenario = false;
-			trackingFarScenario = false;
-			trackingMediumScenario = false;
-			aimTaskRunning = false;
-			aimTaskFinished = false;
-			aimTaskScore = 0;
-		}
-		else if (sixBallsPressed && !previousSixBallsKey)
-		{
-			twoBallsScenario = false;
-			sixBallsScenario = true;
-			trackingScenario = false;
-			trackingFarScenario = false;
-			trackingMediumScenario = false;
-			aimTaskRunning = false;
-			aimTaskFinished = false;
-			aimTaskScore = 0;
-		}
-		previousTwoBallsKey = twoBallsPressed;
-		previousThreeBallsKey = threeBallsPressed;
-		if (trackingPressed && !previousTrackingKey)
-		{
-			twoBallsScenario = false;
-			sixBallsScenario = false;
-			trackingScenario = true;
-			trackingFarScenario = false;
-			trackingMediumScenario = false;
-			aimTaskRunning = false;
-			aimTaskFinished = false;
-			aimTaskScore = 0;
-			trackingScoreAccumulator = 0.0f;
-		}
-		if (trackingFarPressed && !previousTrackingFarKey)
-		{
-			twoBallsScenario = false;
-			sixBallsScenario = false;
-			trackingScenario = true;
-			trackingFarScenario = true;
-			trackingMediumScenario = false;
-			aimTaskRunning = false;
-			aimTaskFinished = false;
-			aimTaskScore = 0;
-			trackingScoreAccumulator = 0.0f;
-		}
-		if (trackingMediumPressed && !previousTrackingMediumKey)
-		{
-			twoBallsScenario = false;
-			sixBallsScenario = false;
-			trackingScenario = true;
-			trackingFarScenario = false;
-			trackingMediumScenario = true;
-			aimTaskRunning = false;
-			aimTaskFinished = false;
-			aimTaskScore = 0;
-			trackingScoreAccumulator = 0.0f;
-		}
-		previousTrackingMediumKey = trackingMediumPressed;
-		previousTrackingFarKey = trackingFarPressed;
-		previousSixBallsKey = sixBallsPressed;
-		previousTrackingKey = trackingPressed;
+
 
 		bool crosshairKeyPressed = platform::isKeyDown(platform::Key::C);
 		if (crosshairKeyPressed && !previousCrosshairKey)
@@ -3778,20 +3722,15 @@ void main()
 		bool aimTrainerActive =
 			playerBallRenderPosition.x >= aimTrainerMinX && playerBallRenderPosition.x <= aimTrainerMaxX &&
 			playerBallRenderPosition.z >= aimTrainerMinZ && playerBallRenderPosition.z <= aimTrainerMaxZ;
-		if (!gamePaused && aimTrainerActive && !aimTaskRunning &&
-			(!aimTaskFinished || currentTime - aimTaskFinishedTime >= aimTaskRetryCooldownSeconds))
-		{
-			aimTaskScore = 0;
-			aimTaskFinished = false;
-			aimTaskRunning = true;
-			playerMovementLocked = true;
-			aimTaskStartTime = currentTime;
-			trackingHadError = false;
-			if (sixBallsScenario)
-				randomizeSixBallTargets();
-		}
 		if (!gamePaused)
 			wasAimTrainerActive = aimTrainerActive;
+		bool scenarioMenuVisible = !gamePaused && aimTrainerActive && !aimTaskRunning && !scenarioListHidden;
+		if (scenarioMenuVisible != scenarioMenuCursorFree)
+		{
+			platform::setCursorCaptured(!scenarioMenuVisible);
+			scenarioMenuCursorFree = scenarioMenuVisible;
+			camera.mouseInitialized = false;
+		}
 		trackingSoundCooldown = std::max(0.0f, trackingSoundCooldown - deltaTime);
 		if (!gamePaused && aimTaskRunning && trackingScenario)
 		{
@@ -3859,6 +3798,7 @@ void main()
 		{
 			aimTaskRunning = false;
 			aimTaskFinished = true;
+			scenarioListHidden = false;
 			playerMovementLocked = false;
 			aimTaskFinishedTime = currentTime;
 			if (sixBallsScenario)
@@ -3916,7 +3856,7 @@ void main()
 
 		bool leftMousePressed = platform::isLeftMouseDown();
 		bool scenarioSelectorClicked = false;
-		if (!gamePaused && aimTrainerActive && leftMousePressed && !previousLeftMouse)
+		if (!gamePaused && aimTrainerActive && !aimTaskRunning && leftMousePressed && !previousLeftMouse)
 		{
 			int selectorFramebufferWidth = 0;
 			int selectorFramebufferHeight = 0;
@@ -3929,22 +3869,17 @@ void main()
 				float clickX = static_cast<float>(cursorX);
 				float clickY = static_cast<float>(cursorY);
 				float selectorCellSize = fpsCellSize;
-				float selectorTop = 16.0f + 24.0f * selectorCellSize;
+				float selectorTop = static_cast<float>(selectorFramebufferHeight) * 0.5f - 17.5f * selectorCellSize;
 				float selectorRowSpacing = 6.0f * selectorCellSize;
-				int clickedRow = static_cast<int>(std::round((clickY - selectorTop) / selectorRowSpacing));
+				float rowTopOffset = clickY - selectorTop;
+				int clickedRow = static_cast<int>(std::floor(rowTopOffset / selectorRowSpacing));
 				float clickedRowTop = selectorTop + static_cast<float>(clickedRow) * selectorRowSpacing;
-				const std::array<std::string, 6> selectorLabels = {
-					"  1 THREESHOT", "  2 DUO SPEED CLICK", "  3 SIX COINS", "  4 SKY TRACK CLOSE EASY", "  5 SKY TRACK FAR EASY", "  6 SKY TRACK CLOSE MEDIUM"
-				};
-				float rowLabelWidth = clickedRow >= 0 && clickedRow < 6
-					? static_cast<float>(selectorLabels[static_cast<std::size_t>(clickedRow)].size() * 4 - 1) * selectorCellSize
-					: 0.0f;
-				float rowLabelLeft = (static_cast<float>(selectorFramebufferWidth) - rowLabelWidth) * 0.5f;
+				std::string clickedRowText = getScenarioMenuRowText(static_cast<std::size_t>(std::max(clickedRow, 0)));
+				float rowLeft = getScenarioMenuRowLeft(clickedRowText, selectorFramebufferWidth, selectorCellSize);
+				float rowWidth = static_cast<float>(clickedRowText.size()) * 4.0f * selectorCellSize;
 				if (clickedRow >= 0 && clickedRow < 6 &&
-					clickY >= clickedRowTop - 5.0f * selectorCellSize &&
-					clickY <= clickedRowTop + selectorCellSize &&
-					clickX >= rowLabelLeft - 2.0f * selectorCellSize &&
-					clickX <= rowLabelLeft + rowLabelWidth + 2.0f * selectorCellSize)
+					clickY >= clickedRowTop && clickY <= clickedRowTop + selectorCellSize * 5.0f &&
+					clickX >= rowLeft && clickX <= rowLeft + rowWidth)
 				{
 					if (clickedRow == 0 && (twoBallsScenario || sixBallsScenario || trackingScenario))
 					{
@@ -4002,9 +3937,16 @@ void main()
 					}
 					if (scenarioSelectorClicked)
 					{
-						aimTaskRunning = false;
-						aimTaskFinished = false;
 						aimTaskScore = 0;
+						aimTaskFinished = false;
+						scenarioListHidden = true;
+						aimTaskRunning = true;
+						playerMovementLocked = true;
+						aimTaskStartTime = currentTime;
+						trackingHadError = false;
+						trackingScoreAccumulator = 0.0f;
+						if (sixBallsScenario)
+							randomizeSixBallTargets();
 					}
 				}
 			}

@@ -37,6 +37,6 @@ public:
 
 	void updateMatrix(float FOVdeg, float nearPlane, float farPlane);
 	void Matrix(Shader& shader, const char* uniform);
-	void Inputs(bool allowMovement = true);
+	void Inputs(bool allowMovement = true, bool allowLook = true);
 };
 #endif
