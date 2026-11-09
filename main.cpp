@@ -3020,6 +3020,19 @@ void main()
 					{
 						platform::requestClose();
 					}
+					else if (aimTaskRunning && buttonHit("CANCEL", pauseTop + 144.0f * menuCellSize, 1.5f))
+					{
+						aimTaskRunning = false;
+						aimTaskFinished = false;
+						scenarioListHidden = false;
+						playerMovementLocked = false;
+						gamePaused = false;
+						showingControls = false;
+						showingRanks = false;
+						showingScenarioRanks = false;
+						camera.mouseInitialized = false;
+						pauseStateChanged = true;
+					}
 				}
 			}
 		}
@@ -3350,6 +3363,8 @@ void main()
 				appendCenteredPauseText("SCENARIO RANKS", fpsCellSize * 1.5f, pauseTop + 84.0f * fpsCellSize);
 				appendCenteredPauseText(nameEditor.active ? "NAME " + nameEditor.text + "_" : std::string("NAME"), fpsCellSize * 1.5f, pauseTop + 104.0f * fpsCellSize);
 				appendCenteredPauseText("EXIT", fpsCellSize * 1.5f, pauseTop + 124.0f * fpsCellSize);
+				if (aimTaskRunning)
+					appendCenteredPauseText("CANCEL", fpsCellSize * 1.5f, pauseTop + 144.0f * fpsCellSize);
 			}
 			if (controlsMenuPage)
 			{
@@ -3881,7 +3896,7 @@ void main()
 					clickY >= clickedRowTop && clickY <= clickedRowTop + selectorCellSize * 5.0f &&
 					clickX >= rowLeft && clickX <= rowLeft + rowWidth)
 				{
-					if (clickedRow == 0 && (twoBallsScenario || sixBallsScenario || trackingScenario))
+					if (clickedRow == 0)
 					{
 						twoBallsScenario = false;
 						sixBallsScenario = false;
