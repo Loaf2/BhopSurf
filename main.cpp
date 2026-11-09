@@ -7,6 +7,7 @@
 #include<cstring>
 #include<array>
 #include<mutex>
+#include<atomic>
 #include<vector>
 #include<unordered_map>
 #ifndef _WIN32
@@ -26,13 +27,18 @@
 #include<thread>
 #define NOMINMAX
 #ifdef _WIN32
+#include<winsock2.h>
+#include<ws2tcpip.h>
 #include<Windows.h>
 #include<winhttp.h>
 #include<mmsystem.h>
+#include<shellapi.h>
 #endif
 #ifdef _WIN32
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "shell32.lib")
 #endif
 namespace fs = std::filesystem;
 
@@ -198,6 +204,16 @@ fs::path getTrackingHighScorePath()
 	return getApplicationDataDirectory() / "tracking_highscore.txt";
 }
 
+fs::path getTrackingFarHighScorePath()
+{
+	return getApplicationDataDirectory() / "tracking_far_highscore.txt";
+}
+
+fs::path getTrackingMediumHighScorePath()
+{
+	return getApplicationDataDirectory() / "tracking_medium_highscore.txt";
+}
+
 fs::path getMouseSensitivityPath()
 {
 	return getApplicationDataDirectory() / "sensitivity.txt";
@@ -211,6 +227,16 @@ fs::path getAudioVolumePath()
 fs::path getAimTargetSizePath()
 {
 	return getApplicationDataDirectory() / "target_size.txt";
+}
+
+fs::path getCrosshairStylePath()
+{
+	return getApplicationDataDirectory() / "crosshair_style.txt";
+}
+
+fs::path getBallColorPath()
+{
+	return getApplicationDataDirectory() / "ball_color.txt";
 }
 
 fs::path getSessionTokenPath()
@@ -278,6 +304,26 @@ void saveMouseSensitivity(const fs::path& sensitivityPath, float sensitivity)
 		output.precision(8);
 		output << sensitivity;
 	}
+}
+
+int loadSelectorIndex(const fs::path& indexPath, int optionCount)
+{
+	std::ifstream input(indexPath);
+	int index = 0;
+	if (input >> index && index >= 0 && index < optionCount)
+		return index;
+	return 0;
+}
+
+void saveSelectorIndex(const fs::path& indexPath, int index)
+{
+	std::error_code error;
+	fs::create_directories(indexPath.parent_path(), error);
+	if (error)
+		return;
+	std::ofstream output(indexPath, std::ios::trunc);
+	if (output)
+		output << index;
 }
 
 float loadAimTargetSize(const fs::path& sizePath)
@@ -363,7 +409,6 @@ void saveAimHighScore(const fs::path& scorePath, int score)
 		output << score;
 }
 
-#define GLM_ENABLE_EXPERIMENTAL
 #include"Model.h"
 #include<iostream>
 #include<memory>
@@ -383,6 +428,24 @@ void saveAimHighScore(const fs::path& scorePath, int score)
 #include<glm/glm.hpp>
 #include<glm/gtc/matrix_transform.hpp>
 #include<glm/gtc/type_ptr.hpp>
+
+struct BallColorOption
+{
+	std::string name;
+	glm::vec3 color;
+};
+
+const std::array<BallColorOption, 8> ballColorOptions = {{
+	{"RED", glm::vec3(1.0f, 0.12f, 0.12f)},
+	{"ORANGE", glm::vec3(1.0f, 0.55f, 0.1f)},
+	{"YELLOW", glm::vec3(1.0f, 0.9f, 0.2f)},
+	{"GREEN", glm::vec3(0.2f, 1.0f, 0.3f)},
+	{"CYAN", glm::vec3(0.1f, 0.9f, 1.0f)},
+	{"BLUE", glm::vec3(0.2f, 0.4f, 1.0f)},
+	{"PINK", glm::vec3(1.0f, 0.4f, 0.8f)},
+	{"WHITE", glm::vec3(1.0f, 1.0f, 1.0f)}
+}};
+
 
 #include"Texture.h"
 #include"shaderClass.h"
@@ -621,6 +684,152 @@ struct SignUpFormState
 
 SignUpFormState signUpForm;
 
+struct GoogleSignInState
+{
+	std::mutex mutex;
+	bool pending = false;
+	bool ready = false;
+	bool succeeded = false;
+	std::string sessionToken;
+	std::string name;
+	std::string message;
+};
+
+auto googleSignInState = std::make_shared<GoogleSignInState>();
+std::atomic<bool> googleSignInShutdown{false};
+
+std::string urlDecodeComponent(const std::string& value)
+{
+	std::string decoded;
+	for (std::size_t index = 0; index < value.size(); ++index)
+	{
+		if (value[index] == '+')
+			decoded.push_back(' ');
+		else if (value[index] == '%' && index + 2 < value.size() && std::isxdigit(static_cast<unsigned char>(value[index + 1])) && std::isxdigit(static_cast<unsigned char>(value[index + 2])))
+		{
+			decoded.push_back(static_cast<char>(std::stoi(value.substr(index + 1, 2), nullptr, 16)));
+			index += 2;
+		}
+		else
+			decoded.push_back(value[index]);
+	}
+	return decoded;
+}
+
+std::string getQueryParameter(const std::string& query, const std::string& key)
+{
+	std::size_t start = 0;
+	while (start <= query.size())
+	{
+		std::size_t end = query.find('&', start);
+		if (end == std::string::npos)
+			end = query.size();
+		std::string pair = query.substr(start, end - start);
+		std::size_t equals = pair.find('=');
+		if (equals != std::string::npos && pair.substr(0, equals) == key)
+			return urlDecodeComponent(pair.substr(equals + 1));
+		start = end + 1;
+	}
+	return {};
+}
+
+void runGoogleSignInListener(std::shared_ptr<GoogleSignInState> state)
+{
+	auto finish = [&](bool succeeded, const std::string& sessionToken, const std::string& name, const std::string& message)
+	{
+		std::lock_guard<std::mutex> lock(state->mutex);
+		state->succeeded = succeeded;
+		state->sessionToken = sessionToken;
+		state->name = name;
+		state->message = message;
+		state->ready = true;
+		state->pending = false;
+	};
+
+	WSADATA wsaData{};
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+	{
+		finish(false, {}, {}, "GOOGLE SIGN IN FAILED");
+		return;
+	}
+
+	SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (listenSocket == INVALID_SOCKET)
+	{
+		WSACleanup();
+		finish(false, {}, {}, "GOOGLE SIGN IN FAILED");
+		return;
+	}
+
+	sockaddr_in address{};
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	address.sin_port = 0;
+	int addressLength = sizeof(address);
+	if (bind(listenSocket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+		getsockname(listenSocket, reinterpret_cast<sockaddr*>(&address), &addressLength) != 0 ||
+		listen(listenSocket, 1) != 0)
+	{
+		closesocket(listenSocket);
+		WSACleanup();
+		finish(false, {}, {}, "GOOGLE SIGN IN FAILED");
+		return;
+	}
+
+	std::string returnTo = "http://127.0.0.1:" + std::to_string(ntohs(address.sin_port)) + "/callback";
+	std::string startUrl = std::string(auth_api_config::baseUrl) + "/api/auth/google/start?returnTo=" + returnTo;	ShellExecuteA(nullptr, "open", startUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+
+	SOCKET client = INVALID_SOCKET;
+	for (int waited = 0; waited < 180 * 4 && !googleSignInShutdown.load(); ++waited)
+	{
+		fd_set readySet;
+		FD_ZERO(&readySet);
+		FD_SET(listenSocket, &readySet);
+		timeval pollInterval{};
+		pollInterval.tv_usec = 250000;
+		int ready = select(0, &readySet, nullptr, nullptr, &pollInterval);
+		if (ready > 0)
+		{
+			client = accept(listenSocket, nullptr, nullptr);
+			break;
+		}
+	}
+	closesocket(listenSocket);
+	if (client == INVALID_SOCKET)
+	{
+		WSACleanup();
+		finish(false, {}, {}, googleSignInShutdown.load() ? "GOOGLE SIGN IN CANCELLED" : "GOOGLE SIGN IN TIMED OUT");
+		return;
+	}
+
+	char buffer[4096]{};
+	int received = recv(client, buffer, static_cast<int>(sizeof(buffer) - 1), 0);
+	std::string request = received > 0 ? std::string(buffer, static_cast<std::size_t>(received)) : std::string();
+	std::string body;
+	std::size_t pathEnd = request.find(' ');
+	std::size_t queryStart = request.find('?');
+	std::string query;
+	if (queryStart != std::string::npos && (pathEnd == std::string::npos || queryStart < request.find(' ', pathEnd + 1)))
+	{
+		std::size_t queryEnd = request.find(' ', queryStart);
+		query = request.substr(queryStart + 1, queryEnd == std::string::npos ? std::string::npos : queryEnd - queryStart - 1);
+	}
+
+	std::string sessionToken = getQueryParameter(query, "session");
+	std::string name = getQueryParameter(query, "name");
+	bool succeeded = !sessionToken.empty();
+	body = succeeded
+		? "<html><body><h2>Signed in. You can return to the game.</h2></body></html>"
+		: "<html><body><h2>Google sign-in failed. You can return to the game.</h2></body></html>";
+	std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: " +
+		std::to_string(body.size()) + "\r\n\r\n" + body;
+	send(client, response.c_str(), static_cast<int>(response.size()), 0);
+	closesocket(client);
+	WSACleanup();
+
+	finish(succeeded, sessionToken, name, succeeded ? std::string() : "GOOGLE SIGN IN FAILED");
+}
+
 struct NameEditorState
 {
 	std::string text;
@@ -751,12 +960,14 @@ struct SignUpResult
 	int twoBallsBestScore = 0;
 	int sixBallsBestScore = 0;
 	int trackingBestScore = 0;
+	int farTrackingBestScore = 0;
 };
 
 std::mutex signUpResultMutex;
 SignUpResult signUpResult;
 bool signUpResultReady = false;
 std::thread signUpAuthThread;
+std::thread googleSignInThread;
 
 #if !defined(_WIN32) && !defined(AIMTRAINER_ANDROID)
 size_t appendCurlResponse(char* data, size_t size, size_t count, void* context)
@@ -955,21 +1166,92 @@ bool getJsonIntValue(const std::string& json, const std::string& key, int& value
 	}
 }
 
-bool sendRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore, int& trackingBestScore)
+struct LeaderboardEntry
+{
+	std::string name;
+	int score = 0;
+	int rank = 0;
+};
+
+struct LeaderboardState
+{
+	std::mutex mutex;
+	std::vector<LeaderboardEntry> entries;
+	std::string status;
+	int requestId = 0;
+};
+
+constexpr std::array<const char*, 6> leaderboardScenarioIds = { "aim", "two_balls", "six_balls", "tracking", "tracking_far", "tracking_medium" };
+constexpr std::array<const char*, 6> leaderboardScenarioNames = { "THREESHOT", "DUO SPEED CLICK", "SIX COINS", "SKY TRACK CLOSE EASY", "SKY TRACK FAR EASY", "SKY TRACK CLOSE MEDIUM" };
+
+void parseLeaderboardEntries(const std::string& json, std::vector<LeaderboardEntry>& entries)
+{
+	entries.clear();
+	std::size_t objectStart = json.find('{');
+	while (objectStart != std::string::npos)
+	{
+		std::size_t objectEnd = json.find('}', objectStart);
+		if (objectEnd == std::string::npos)
+			break;
+		std::string object = json.substr(objectStart, objectEnd - objectStart + 1);
+		LeaderboardEntry entry;
+		entry.name = getJsonStringValue(object, "name");
+		if (getJsonIntValue(object, "score", entry.score) && getJsonIntValue(object, "rank", entry.rank))
+			entries.push_back(entry);
+		objectStart = json.find('{', objectEnd + 1);
+	}
+}
+
+void requestLeaderboard(const std::shared_ptr<LeaderboardState>& state, const std::string& sessionToken, std::size_t scenarioIndex)
+{
+	int requestId = 0;
+	{
+		std::lock_guard<std::mutex> lock(state->mutex);
+		requestId = ++state->requestId;
+		state->entries.clear();
+		state->status = sessionToken.empty() ? "SIGN IN TO VIEW LEADERBOARD" : "LOADING";
+	}
+	if (sessionToken.empty())
+		return;
+	std::thread([state, sessionToken, scenarioIndex, requestId]()
+	{
+		ApiResponse response = sendApiRequest("GET", std::string("/api/leaderboard?scenario=") + leaderboardScenarioIds[scenarioIndex], {}, sessionToken);
+		std::vector<LeaderboardEntry> entries;
+		bool ok = response.received && response.statusCode == 200;
+		if (ok)
+			parseLeaderboardEntries(response.body, entries);
+		std::lock_guard<std::mutex> lock(state->mutex);
+		if (state->requestId != requestId)
+			return;
+		state->entries = entries;
+		if (!ok)
+			state->status = "COULD NOT LOAD";
+		else if (entries.empty())
+			state->status = "NO SCORES YET";
+		else
+			state->status.clear();
+	}).detach();
+}
+
+bool sendRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore, int& trackingBestScore, int& farTrackingBestScore, int& mediumTrackingBestScore)
 {
 	std::string body = "{\"aimBestScore\":" + std::to_string(aimBestScore) +
 		",\"twoBallsBestScore\":" + std::to_string(twoBallsBestScore) +
 		",\"sixBallsBestScore\":" + std::to_string(sixBallsBestScore) +
-		",\"trackingBestScore\":" + std::to_string(trackingBestScore) + "}";
+		",\"trackingBestScore\":" + std::to_string(trackingBestScore) +
+		",\"farTrackingBestScore\":" + std::to_string(farTrackingBestScore) +
+		",\"mediumTrackingBestScore\":" + std::to_string(mediumTrackingBestScore) + "}";
 	ApiResponse response = sendApiRequest("PUT", "/api/ranks", body, sessionToken);
 	return response.received && response.statusCode == 200 &&
 		getJsonIntValue(response.body, "aimBestScore", aimBestScore) &&
 		getJsonIntValue(response.body, "twoBallsBestScore", twoBallsBestScore) &&
 		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore) &&
-		getJsonIntValue(response.body, "trackingBestScore", trackingBestScore);
+		getJsonIntValue(response.body, "trackingBestScore", trackingBestScore) &&
+		getJsonIntValue(response.body, "farTrackingBestScore", farTrackingBestScore) &&
+		getJsonIntValue(response.body, "mediumTrackingBestScore", mediumTrackingBestScore);
 }
 
-bool loadRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore, int& trackingBestScore, std::string& accountName)
+bool loadRankScores(const std::string& sessionToken, int& aimBestScore, int& twoBallsBestScore, int& sixBallsBestScore, int& trackingBestScore, int& farTrackingBestScore, int& mediumTrackingBestScore, std::string& accountName)
 {
 	ApiResponse response = sendApiRequest("GET", "/api/ranks", {}, sessionToken);
 	accountName = getJsonStringValue(response.body, "accountName");
@@ -977,7 +1259,9 @@ bool loadRankScores(const std::string& sessionToken, int& aimBestScore, int& two
 		getJsonIntValue(response.body, "aimBestScore", aimBestScore) &&
 		getJsonIntValue(response.body, "twoBallsBestScore", twoBallsBestScore) &&
 		getJsonIntValue(response.body, "sixBallsBestScore", sixBallsBestScore) &&
-		getJsonIntValue(response.body, "trackingBestScore", trackingBestScore);
+		getJsonIntValue(response.body, "trackingBestScore", trackingBestScore) &&
+		getJsonIntValue(response.body, "farTrackingBestScore", farTrackingBestScore) &&
+		getJsonIntValue(response.body, "mediumTrackingBestScore", mediumTrackingBestScore);
 }
 
 std::string escapeJsonString(const std::string& value)
@@ -1577,7 +1861,7 @@ void main()
 		int resourceId;
 		const wchar_t* relativePath;
 	};
-	const std::array<EmbeddedAssetFile, 10> embeddedAssetFiles =
+	const std::array<EmbeddedAssetFile, 8> embeddedAssetFiles =
 	{{
 		{ 101, L"default.vert" },
 		{ 102, L"default.frag" },
@@ -1586,9 +1870,7 @@ void main()
 		{ 203, L"Resources/models/plane/baseColor.png" },
 		{ 301, L"Resources/models/orb/redorb.gltf" },
 		{ 302, L"Resources/models/orb/redorb.bin" },
-		{ 303, L"Resources/models/orb/basecolor.png" },
-		{ 401, L"Resources/models/prism/prism.gltf" },
-		{ 402, L"Resources/models/prism/prism.bin" }
+		{ 303, L"Resources/models/orb/basecolor.png" }
 	}};
 
 	#endif
@@ -1701,6 +1983,7 @@ void main()
 	float audioVolume = loadAudioVolume(audioVolumePath);
 	const fs::path aimTargetSizePath = getAimTargetSizePath();
 	float aimTargetSize = loadAimTargetSize(aimTargetSizePath);
+	int ballColorIndex = loadSelectorIndex(getBallColorPath(), static_cast<int>(ballColorOptions.size()));
 	cameraForFramebufferCallback = &camera;
 
 	fs::path modelPath = assetRoot / "Resources" / "models" / "plane" / "plane.gltf";
@@ -1736,16 +2019,6 @@ void main()
 	}
 	Model orbModel(orbFile.c_str());
 
-	fs::path prismPath = assetRoot / "Resources" / "models" / "prism" / "prism.gltf";
-	if (!fs::exists(prismPath))
-	{
-		std::cerr << "Prism model not found: " << prismPath << std::endl;
-		platform::destroyWindow();
-		return -1;
-	}
-	std::string prismFile = prismPath.string();
-	Model prismModel(prismFile.c_str());
-
 	struct Ball
 	{
 		glm::vec3 position;
@@ -1753,40 +2026,18 @@ void main()
 		bool grounded = false;
 	};
 
-	float platformScale = 3.0f;
+	const float platformScale = 3.0f;
 	const float platformTop = model.GetVerticalBounds(glm::vec3(platformScale, 1.0f, platformScale)).y;
 	glm::vec2 orbVerticalBounds = orbModel.GetVerticalBounds();
 	float orbBottomOffset = orbVerticalBounds.x;
 	const float gravity = 15.0f;
 	const float cameraGravity = 42.0f;
-	const float ballMoveSpeed = 5.0f;
 	const float jumpSpeed = 17.0f;
 	const float cameraGroundY = platformTop + 1.5f;
 	const float ballRadius = 1.0f;
-	const float cameraColliderRadius = 0.6f;
-	const float cameraColliderTopOffset = 0.2f;
-	const float cameraColliderBottomOffset = 1.5f;
-	const glm::vec3 prismScale(24.0f, 3.0f, 3.0f);
-	const float prismOffsetX = 5.0f;
-	const float prismSurfaceClearance = 0.25f;
-	const glm::vec3 prismLocalMinimum = prismModel.GetMinimumBounds(prismScale);
-	const float rightmostBallSpawnX = 3.0f;
-	const glm::vec3 prismPosition(
-		rightmostBallSpawnX + ballRadius + prismOffsetX - prismLocalMinimum.x,
-		platformTop + prismSurfaceClearance - prismLocalMinimum.y,
-		0.0f
-	);
-	const glm::vec3 prismWorldMinimum = prismLocalMinimum + prismPosition;
-	const glm::vec3 prismWorldMaximum = prismModel.GetMaximumBounds(prismScale) + prismPosition;
-	platformScale = std::max(
-		std::max(std::abs(prismWorldMinimum.x), std::abs(prismWorldMaximum.x)) / 24.206254f,
-		std::max(std::abs(prismWorldMinimum.z), std::abs(prismWorldMaximum.z)) / 21.531103f
-	) + 1.0f;
 	const float platformHalfWidth = 24.206254f * platformScale + 0.25f;
 	const float platformHalfDepth = 21.531103f * platformScale + 0.25f;
-	const std::vector<std::array<glm::vec3, 3>> prismTriangles = prismModel.GetTriangles(prismPosition, prismScale);
 	const float ballGroundY = platformTop - orbBottomOffset;
-	const float orbSpawnHeight = ballGroundY + 15.0f;
 	const int playerBallIndex = 0;
 	const float cameraToPlayerBallOffset = cameraGroundY - ballGroundY;
 	const float playerBallVisualScale = 1.0f;
@@ -1942,6 +2193,8 @@ void main()
 	const fs::path twoBallsHighScorePath = getTwoBallsHighScorePath();
 	const fs::path sixBallsHighScorePath = getSixBallsHighScorePath();
 	const fs::path trackingHighScorePath = getTrackingHighScorePath();
+	const fs::path trackingFarHighScorePath = getTrackingFarHighScorePath();
+	const fs::path trackingMediumHighScorePath = getTrackingMediumHighScorePath();
 	const fs::path sessionTokenPath = getSessionTokenPath();
 	const fs::path activationMarkerPath = getActivationMarkerPath();
 	constexpr double aimTaskRetryCooldownSeconds = 1.0;
@@ -1950,6 +2203,8 @@ void main()
 	int twoBallsHighScore = loadAimHighScore(twoBallsHighScorePath);
 	int sixBallsHighScore = loadAimHighScore(sixBallsHighScorePath);
 	int trackingHighScore = loadAimHighScore(trackingHighScorePath);
+	int trackingFarHighScore = loadAimHighScore(trackingFarHighScorePath);
+	int trackingMediumHighScore = loadAimHighScore(trackingMediumHighScorePath);
 	std::string authenticatedSessionToken = loadSessionToken(sessionTokenPath);
 	const std::string activatedEmail = loadSessionToken(activationMarkerPath);
 	const std::string accountEmail = loadSessionToken(getApplicationDataDirectory() / "account.email");
@@ -1963,14 +2218,18 @@ void main()
 		int remoteTwoBallsHighScore = 0;
 		int remoteSixBallsHighScore = 0;
 		int remoteTrackingHighScore = 0;
+		int remoteFarTrackingHighScore = 0;
+		int remoteMediumTrackingHighScore = 0;
 		std::string remoteAccountName;
-		if (loadRankScores(authenticatedSessionToken, remoteAimHighScore, remoteTwoBallsHighScore, remoteSixBallsHighScore, remoteTrackingHighScore, remoteAccountName))
+		if (loadRankScores(authenticatedSessionToken, remoteAimHighScore, remoteTwoBallsHighScore, remoteSixBallsHighScore, remoteTrackingHighScore, remoteFarTrackingHighScore, remoteMediumTrackingHighScore, remoteAccountName))
 		{
 			cloudAccountName = remoteAccountName;
 			aimHighScore = std::max(aimHighScore, remoteAimHighScore);
 			twoBallsHighScore = std::max(twoBallsHighScore, remoteTwoBallsHighScore);
 			sixBallsHighScore = std::max(sixBallsHighScore, remoteSixBallsHighScore);
 			trackingHighScore = std::max(trackingHighScore, remoteTrackingHighScore);
+			trackingFarHighScore = std::max(trackingFarHighScore, remoteFarTrackingHighScore);
+			trackingMediumHighScore = std::max(trackingMediumHighScore, remoteMediumTrackingHighScore);
 			restoreAuthenticatedSession = true;
 		}
 		else
@@ -1983,18 +2242,27 @@ void main()
 	bool twoBallsScenario = false;
 	bool sixBallsScenario = false;
 	bool trackingScenario = false;
+	bool trackingFarScenario = false;
+	bool trackingMediumScenario = false;
+	bool playerMovementLocked = false;
 	bool previousTrackingKey = false;
+	bool previousTrackingFarKey = false;
+	bool previousTrackingMediumKey = false;
 	float trackingScoreAccumulator = 0.0f;
-	constexpr float trackingPointsPerSecond = 10.0f;
+	bool trackingHadError = false;
+	constexpr float trackingPointsPerSecond = 400.0f / static_cast<float>(aimTaskDurationSeconds);
 	glm::vec3 trackingBallPosition(0.0f, ballGroundY + 4.0f, -26.0f);
 	constexpr float trackingBallSizeMultiplier = 1.0f;
+	constexpr float trackingFarOffsetX = 14.0f;
+	constexpr float trackingSoundInterval = 0.1f;
+	float trackingSoundCooldown = 0.0f;
 	struct AimRank
 	{
 		const char* name;
 		int minimumScore;
 		glm::vec4 color;
 	};
-	const std::array<AimRank, 12> aimRanks = {{
+	const std::array<AimRank, 33> aimRanks = {{
 		{ "WOOD", 0, glm::vec4(0.48f, 0.27f, 0.12f, 1.0f) },
 		{ "BRONZE", 15, glm::vec4(0.72f, 0.38f, 0.20f, 1.0f) },
 		{ "SILVER", 30, glm::vec4(0.78f, 0.81f, 0.84f, 1.0f) },
@@ -2004,13 +2272,34 @@ void main()
 		{ "EMERALD", 90, glm::vec4(0.08f, 0.62f, 0.28f, 1.0f) },
 		{ "AMETHYST", 105, glm::vec4(0.58f, 0.26f, 0.82f, 1.0f) },
 		{ "REIDITE", 120, glm::vec4(0.55f, 0.24f, 0.20f, 1.0f) },
-		{ "OBSIDIAN", 135, glm::vec4(0.24f, 0.19f, 0.31f, 1.0f) },
-		{ "TITANIUM", 150, glm::vec4(0.62f, 0.66f, 0.70f, 1.0f) },
-		{ "COLOSSEUM", 165, glm::vec4(0.72f, 0.60f, 0.40f, 1.0f) }
+		{ "OBSIDIAN I", 135, glm::vec4(0.24f, 0.19f, 0.31f, 1.0f) },
+		{ "OBSIDIAN II", 140, glm::vec4(0.24f, 0.19f, 0.31f, 1.0f) },
+		{ "OBSIDIAN III", 145, glm::vec4(0.24f, 0.19f, 0.31f, 1.0f) },
+		{ "TITANIUM I", 150, glm::vec4(0.62f, 0.66f, 0.70f, 1.0f) },
+		{ "TITANIUM II", 155, glm::vec4(0.62f, 0.66f, 0.70f, 1.0f) },
+		{ "TITANIUM III", 160, glm::vec4(0.62f, 0.66f, 0.70f, 1.0f) },
+		{ "COLOSSEUM I", 165, glm::vec4(0.72f, 0.60f, 0.40f, 1.0f) },
+		{ "COLOSSEUM II", 170, glm::vec4(0.72f, 0.60f, 0.40f, 1.0f) },
+		{ "COLOSSEUM III", 175, glm::vec4(0.72f, 0.60f, 0.40f, 1.0f) },
+		{ "LUNAR I", 180, glm::vec4(0.80f, 0.84f, 0.96f, 1.0f) },
+		{ "LUNAR II", 185, glm::vec4(0.80f, 0.84f, 0.96f, 1.0f) },
+		{ "LUNAR III", 190, glm::vec4(0.80f, 0.84f, 0.96f, 1.0f) },
+		{ "CLOUD I", 195, glm::vec4(0.70f, 0.90f, 0.98f, 1.0f) },
+		{ "CLOUD II", 200, glm::vec4(0.70f, 0.90f, 0.98f, 1.0f) },
+		{ "CLOUD III", 205, glm::vec4(0.70f, 0.90f, 0.98f, 1.0f) },
+		{ "SOLAR I", 210, glm::vec4(1.0f, 0.86f, 0.35f, 1.0f) },
+		{ "SOLAR II", 215, glm::vec4(1.0f, 0.86f, 0.35f, 1.0f) },
+		{ "SOLAR III", 220, glm::vec4(1.0f, 0.86f, 0.35f, 1.0f) },
+		{ "STAR I", 225, glm::vec4(1.0f, 0.97f, 0.80f, 1.0f) },
+		{ "STAR II", 230, glm::vec4(1.0f, 0.97f, 0.80f, 1.0f) },
+		{ "STAR III", 235, glm::vec4(1.0f, 0.97f, 0.80f, 1.0f) },
+		{ "STELLAR I", 250, glm::vec4(0.74f, 0.92f, 1.0f, 1.0f) },
+		{ "STELLAR II", 265, glm::vec4(0.74f, 0.92f, 1.0f, 1.0f) },
+		{ "STELLAR III", 280, glm::vec4(0.74f, 0.92f, 1.0f, 1.0f) }
 	}};
 	auto getCurrentAimRank = [&]() -> const AimRank&
 	{
-		int scenarioHighScore = trackingScenario ? trackingHighScore : (sixBallsScenario ? sixBallsHighScore :
+		int scenarioHighScore = trackingScenario ? (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore)) : (sixBallsScenario ? sixBallsHighScore :
 			(twoBallsScenario ? twoBallsHighScore : aimHighScore));
 		const AimRank* rank = &aimRanks.front();
 		for (const AimRank& candidate : aimRanks)
@@ -2098,7 +2387,10 @@ void main()
 	bool showingControls = false;
 	bool showingRanks = false;
 	bool showingScenarioRanks = false;
-	int crosshairStyle = 0;
+		bool showingLeaderboard = false;
+		std::size_t leaderboardScenarioIndex = 0;
+		auto leaderboardState = std::make_shared<LeaderboardState>();
+	int crosshairStyle = loadSelectorIndex(getCrosshairStylePath(), 4);
 	bool previousCrosshairKey = false;
 	bool previousRanksKey = false;
 	bool previousEscape = false;
@@ -2111,50 +2403,6 @@ void main()
 	float jumpBufferRemaining = 0.0f;
 	auto resolveCameraBallCollisions = [&]()
 	{
-		for (int collisionPass = 0; collisionPass < 3; ++collisionPass)
-		{
-			bool resolvedContact = false;
-			for (const auto& triangle : prismTriangles)
-			{
-				glm::vec3 ballCenter = camera.Position - glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
-				glm::vec3 closestPoint = closestPointOnTriangle(ballCenter, triangle[0], triangle[1], triangle[2]);
-				glm::vec3 collisionOffset = ballCenter - closestPoint;
-				float distanceSquared = glm::dot(collisionOffset, collisionOffset);
-				if (distanceSquared >= playerBallCollisionRadius * playerBallCollisionRadius)
-					continue;
-
-				float distance = std::sqrt(distanceSquared);
-				glm::vec3 normal;
-				if (distance > 0.0001f)
-					normal = collisionOffset / distance;
-				else
-				{
-					normal = glm::normalize(glm::cross(triangle[1] - triangle[0], triangle[2] - triangle[0]));
-					glm::vec3 triangleCenter = (triangle[0] + triangle[1] + triangle[2]) / 3.0f;
-					if (glm::dot(ballCenter - triangleCenter, normal) < 0.0f)
-						normal = -normal;
-				}
-
-				camera.Position += normal * (playerBallCollisionRadius - distance);
-				glm::vec3 cameraVelocity(camera.horizontalVelocity.x, cameraVerticalVelocity, camera.horizontalVelocity.z);
-				float velocityIntoFace = glm::dot(cameraVelocity, normal);
-				if (velocityIntoFace < 0.0f)
-				{
-					glm::vec3 tangentVelocity = cameraVelocity - normal * velocityIntoFace;
-					float surfAcceleration = std::min(-velocityIntoFace * 1.75f, 90.0f);
-					if (glm::length(tangentVelocity) > 0.0001f)
-						tangentVelocity = glm::normalize(tangentVelocity) * (glm::length(tangentVelocity) + surfAcceleration / 120.0f);
-					cameraVelocity = tangentVelocity;
-					camera.horizontalVelocity.x = cameraVelocity.x;
-					cameraVerticalVelocity = cameraVelocity.y;
-					camera.horizontalVelocity.z = cameraVelocity.z;
-				}
-				resolvedContact = true;
-			}
-			if (!resolvedContact)
-				break;
-		}
-
 		for (std::size_t ballIndex = 0; ballIndex < balls.size(); ++ballIndex)
 		{
 			if (ballIndex == playerBallIndex)
@@ -2231,9 +2479,9 @@ void main()
 	fpsVertices.insert(fpsVertices.end(), aimTaskVertices.begin(), aimTaskVertices.end());
 	GLint rankVertexStart = 0;
 	GLsizei rankVertexCount = 0;
-	std::array<GLint, 12> rankLadderVertexStarts{};
-	std::array<GLsizei, 12> rankLadderVertexCounts{};
-	std::array<glm::vec4, 12> rankLadderColors{};
+	std::array<GLint, 33> rankLadderVertexStarts{};
+	std::array<GLsizei, 33> rankLadderVertexCounts{};
+	std::array<glm::vec4, 33> rankLadderColors{};
 	glm::vec4 currentRankColor = getCurrentAimRank().color;
 	bool rankLadderVisible = false;
 	glBindBuffer(GL_ARRAY_BUFFER, fpsVBO);
@@ -2243,6 +2491,55 @@ void main()
 	while (!platform::shouldClose())
 	{
 		processInput();
+		bool googleReady = false;
+		bool googleSucceeded = false;
+		std::string googleSessionToken;
+		std::string googleName;
+		std::string googleMessage;
+		{
+			std::lock_guard<std::mutex> lock(googleSignInState->mutex);
+			if (googleSignInState->ready)
+			{
+				googleReady = true;
+				googleSucceeded = googleSignInState->succeeded;
+				googleSessionToken = googleSignInState->sessionToken;
+				googleName = googleSignInState->name;
+				googleMessage = googleSignInState->message;
+				googleSignInState->ready = false;
+			}
+		}
+		if (googleReady)
+		{
+			if (googleSignInThread.joinable())
+				googleSignInThread.join();
+			signUpForm.status = googleMessage;
+			if (googleSucceeded)
+			{
+				authenticatedSessionToken = googleSessionToken;
+				saveSessionToken(sessionTokenPath, authenticatedSessionToken);
+				if (!googleName.empty())
+				{
+					localPlayerName = googleName;
+					saveSessionToken(getPlayerNamePath(), localPlayerName);
+				}
+				signUpForm.active = false;
+				signUpForm.complete = true;
+				gamePaused = false;
+				platform::setCursorCaptured(true);
+				try
+				{
+					rankSyncThreads.emplace_back([sessionToken = authenticatedSessionToken, aimBestScore = aimHighScore,
+						twoBallsBestScore = twoBallsHighScore, sixBallsBestScore = sixBallsHighScore,
+						trackingBestScore = trackingHighScore, farTrackingBestScore = trackingFarHighScore, mediumTrackingBestScore = trackingMediumHighScore]() mutable
+					{
+						sendRankScores(sessionToken, aimBestScore, twoBallsBestScore, sixBallsBestScore, trackingBestScore, farTrackingBestScore, mediumTrackingBestScore);
+					});
+				}
+				catch (const std::system_error&)
+				{
+				}
+			}
+		}
 		SignUpResult completedSignUpResult;
 		bool hasCompletedSignUpRequest = false;
 		{
@@ -2304,6 +2601,23 @@ void main()
 						trackingHighScore = completedSignUpResult.trackingBestScore;
 						saveAimHighScore(trackingHighScorePath, trackingHighScore);
 					}
+					if (completedSignUpResult.farTrackingBestScore > trackingFarHighScore)
+					{
+						trackingFarHighScore = completedSignUpResult.farTrackingBestScore;
+						saveAimHighScore(trackingFarHighScorePath, trackingFarHighScore);
+					}
+				}
+				try
+				{
+					rankSyncThreads.emplace_back([sessionToken = authenticatedSessionToken, aimBestScore = aimHighScore,
+						twoBallsBestScore = twoBallsHighScore, sixBallsBestScore = sixBallsHighScore,
+						trackingBestScore = trackingHighScore, farTrackingBestScore = trackingFarHighScore, mediumTrackingBestScore = trackingMediumHighScore]() mutable
+									{
+										sendRankScores(sessionToken, aimBestScore, twoBallsBestScore, sixBallsBestScore, trackingBestScore, farTrackingBestScore, mediumTrackingBestScore);
+					});
+				}
+				catch (const std::system_error&)
+				{
 				}
 				if (signUpForm.email == website_api_config::ownerEmail)
 				{
@@ -2516,6 +2830,28 @@ void main()
 							clickY >= static_cast<float>(clickFramebufferHeight) * 0.67f - 5.0f * menuCellSize &&
 							clickY <= static_cast<float>(clickFramebufferHeight) * 0.67f + 12.0f * menuCellSize)
 							signUpForm.submitRequested = true;
+						else if (signUpForm.signInMode && clickX >= formCenterX - 75.0f * menuCellSize && clickX <= formCenterX + 75.0f * menuCellSize &&
+							clickY >= static_cast<float>(clickFramebufferHeight) * 0.82f - 5.0f * menuCellSize &&
+							clickY <= static_cast<float>(clickFramebufferHeight) * 0.82f + 12.0f * menuCellSize)
+						{
+							bool startGoogle = false;
+							{
+								std::lock_guard<std::mutex> lock(googleSignInState->mutex);
+								if (!googleSignInState->pending)
+								{
+									googleSignInState->pending = true;
+									googleSignInState->ready = false;
+									startGoogle = true;
+								}
+							}
+							if (startGoogle)
+							{
+								if (googleSignInThread.joinable())
+									googleSignInThread.join();
+								signUpForm.status = "WAITING FOR GOOGLE";
+								googleSignInThread = std::thread(runGoogleSignInListener, googleSignInState);
+							}
+						}
 						else if (clickX >= formCenterX - 75.0f * menuCellSize && clickX <= formCenterX + 75.0f * menuCellSize &&
 							clickY >= static_cast<float>(clickFramebufferHeight) * 0.75f - 5.0f * menuCellSize &&
 							clickY <= static_cast<float>(clickFramebufferHeight) * 0.75f + 12.0f * menuCellSize)
@@ -2532,11 +2868,26 @@ void main()
 				{
 					float backTop = static_cast<float>(clickFramebufferHeight) - 48.0f * menuCellSize;
 					float backCenterX = static_cast<float>(clickFramebufferWidth) * 0.5f;
+					float selectorLabelTop = static_cast<float>(clickFramebufferHeight) * 0.60f;
 					if (clickX >= backCenterX - 20.0f * menuCellSize && clickX <= backCenterX + 20.0f * menuCellSize &&
 						clickY >= backTop - 5.0f * menuCellSize && clickY <= backTop + 12.0f * menuCellSize)
 					{
 						showingControls = false;
 						controlsMenuPage = false;
+						pauseStateChanged = true;
+					}
+					else if (clickX >= backCenterX - 110.0f * menuCellSize && clickX <= backCenterX + 110.0f * menuCellSize &&
+						clickY >= selectorLabelTop + 36.0f * menuCellSize - 5.0f * menuCellSize && clickY <= selectorLabelTop + 36.0f * menuCellSize + 12.0f * menuCellSize)
+					{
+						crosshairStyle = (crosshairStyle + 1) % 4;
+						saveSelectorIndex(getCrosshairStylePath(), crosshairStyle);
+						pauseStateChanged = true;
+					}
+					else if (clickX >= backCenterX - 110.0f * menuCellSize && clickX <= backCenterX + 110.0f * menuCellSize &&
+						clickY >= selectorLabelTop + 48.0f * menuCellSize - 5.0f * menuCellSize && clickY <= selectorLabelTop + 48.0f * menuCellSize + 12.0f * menuCellSize)
+					{
+						ballColorIndex = (ballColorIndex + 1) % static_cast<int>(ballColorOptions.size());
+						saveSelectorIndex(getBallColorPath(), ballColorIndex);
 						pauseStateChanged = true;
 					}
 				}
@@ -2550,6 +2901,33 @@ void main()
 						showingRanks = false;
 						showingScenarioRanks = false;
 						pauseStateChanged = true;
+					}
+					else if (showingScenarioRanks)
+					{
+						float modeTop = static_cast<float>(clickFramebufferHeight) * 0.66f;
+						float titleTop = static_cast<float>(clickFramebufferHeight) * 0.28f;
+						float centerX = static_cast<float>(clickFramebufferWidth) * 0.5f;
+						auto inBand = [&](float top, float halfWidth)
+						{
+							return clickX >= centerX - halfWidth && clickX <= centerX + halfWidth &&
+								clickY >= top - 5.0f * menuCellSize && clickY <= top + 12.0f * menuCellSize;
+						};
+						if (inBand(modeTop, 40.0f * menuCellSize))
+						{
+							showingLeaderboard = !showingLeaderboard;
+							if (showingLeaderboard)
+							{
+								leaderboardScenarioIndex = trackingScenario ? (trackingMediumScenario ? 5 : (trackingFarScenario ? 4 : 3)) : (sixBallsScenario ? 2 : (twoBallsScenario ? 1 : 0));
+								requestLeaderboard(leaderboardState, authenticatedSessionToken, leaderboardScenarioIndex);
+							}
+							pauseStateChanged = true;
+						}
+						else if (showingLeaderboard && inBand(titleTop, 100.0f * menuCellSize))
+						{
+							leaderboardScenarioIndex = (leaderboardScenarioIndex + 1) % leaderboardScenarioIds.size();
+							requestLeaderboard(leaderboardState, authenticatedSessionToken, leaderboardScenarioIndex);
+							pauseStateChanged = true;
+						}
 					}
 				}
 				else
@@ -2577,6 +2955,7 @@ void main()
 					else if (buttonHit("SCENARIO RANKS", pauseTop + 84.0f * menuCellSize, 1.5f))
 					{
 						showingScenarioRanks = true;
+						showingLeaderboard = false;
 						showingRanks = showingControls = false;
 						pauseStateChanged = true;
 					}
@@ -2586,7 +2965,7 @@ void main()
 						showingControls = showingScenarioRanks = false;
 						pauseStateChanged = true;
 					}
-					else if (buttonHit("CONTROLS", pauseTop + 40.0f * menuCellSize, 1.5f))
+					else if (buttonHit("SETTINGS", pauseTop + 40.0f * menuCellSize, 1.5f))
 					{
 						showingControls = !showingControls;
 						showingRanks = showingScenarioRanks = false;
@@ -2666,7 +3045,7 @@ void main()
 					try
 					{
 						 signUpAuthThread = std::thread([email = std::move(email), password = std::move(password), signIn,
-							 localAimBest = aimHighScore, localTwoBallsBest = twoBallsHighScore, localSixBallsBest = sixBallsHighScore, localTrackingBest = trackingHighScore]()
+							 localAimBest = aimHighScore, localTwoBallsBest = twoBallsHighScore, localSixBallsBest = sixBallsHighScore, localTrackingBest = trackingHighScore, localFarTrackingBest = trackingFarHighScore, localMediumTrackingBest = trackingMediumHighScore]()
 						{
 							SignUpResult requestResult = sendAuthApiRequest(email, password, signIn);
 							if (requestResult.authenticated && !requestResult.sessionToken.empty())
@@ -2675,8 +3054,10 @@ void main()
 								requestResult.twoBallsBestScore = localTwoBallsBest;
 								requestResult.sixBallsBestScore = localSixBallsBest;
 								requestResult.trackingBestScore = localTrackingBest;
+								requestResult.farTrackingBestScore = localFarTrackingBest;
+								int mediumTrackingBestScore = localMediumTrackingBest;
 								requestResult.ranksSynchronized = sendRankScores(requestResult.sessionToken,
-									requestResult.aimBestScore, requestResult.twoBallsBestScore, requestResult.sixBallsBestScore, requestResult.trackingBestScore);
+										requestResult.aimBestScore, requestResult.twoBallsBestScore, requestResult.sixBallsBestScore, requestResult.trackingBestScore, requestResult.farTrackingBestScore, mediumTrackingBestScore);
 							}
 							std::lock_guard<std::mutex> resultLock(signUpResultMutex);
 							signUpResult = std::move(requestResult);
@@ -2738,7 +3119,7 @@ void main()
 				aimTaskSecondsRemaining = static_cast<int>(std::ceil(std::max(0.0, aimTaskDurationSeconds - (aimTaskClockTime - aimTaskStartTime))));
 			aimTaskLabel = "T:" + std::to_string(aimTaskSecondsRemaining) +
 				" H:" + std::to_string(aimTaskScore) +
-			" B:" + std::to_string(trackingScenario ? trackingHighScore : sixBallsScenario ? sixBallsHighScore :
+			" B:" + std::to_string(trackingScenario ? (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore)) : sixBallsScenario ? sixBallsHighScore :
 				(twoBallsScenario ? twoBallsHighScore : aimHighScore));
 			aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 18.0f * fpsCellSize);
 			if (!signUpForm.active && !rankMenuPage && !controlsMenuPage)
@@ -2764,7 +3145,7 @@ void main()
 				}
 #endif
 			}
-			int scenarioHighScore = trackingScenario ? trackingHighScore : (sixBallsScenario ? sixBallsHighScore :
+			int scenarioHighScore = trackingScenario ? (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore)) : (sixBallsScenario ? sixBallsHighScore :
 				(twoBallsScenario ? twoBallsHighScore : aimHighScore));
 			int currentRankMinimumScore = getCurrentAimRank().minimumScore;
 			int nextRankMinimumScore = aimRanks.back().minimumScore;
@@ -2817,7 +3198,7 @@ void main()
 				std::string progressText = scenarioHighScore >= aimRanks.back().minimumScore
 					? "MAX RANK"
 					: "NEXT " + std::to_string(std::max(0, nextRankMinimumScore - scenarioHighScore));
-				appendCenteredRankText(progressText, fpsCellSize, static_cast<float>(framebufferHeight) * 0.25f + 12.0f * 4.5f * fpsCellSize);
+				appendCenteredRankText(progressText, fpsCellSize, static_cast<float>(framebufferHeight) * 0.25f + static_cast<float>(aimRanks.size()) * 4.5f * fpsCellSize);
 				const std::string displayedName = localPlayerName.empty() ? cloudAccountName : localPlayerName;
 				if (!displayedName.empty())
 					appendCenteredRankText(displayedName, fpsCellSize, static_cast<float>(framebufferHeight) * 0.09f);
@@ -2895,6 +3276,16 @@ void main()
 					static_cast<float>(framebufferHeight) * 0.67f, 1.4f, 4.5f);
 				appendCenteredSignUpText(signUpForm.signInMode ? "CREATE ACCOUNT" : "SWITCH TO SIGN IN",
 					static_cast<float>(framebufferHeight) * 0.75f);
+				if (signUpForm.signInMode)
+				{
+					bool googlePending = false;
+					{
+						std::lock_guard<std::mutex> lock(googleSignInState->mutex);
+						googlePending = googleSignInState->pending;
+					}
+					appendCenteredSignUpText(googlePending ? "CONNECTING TO GOOGLE" : "SIGN IN WITH GOOGLE",
+						static_cast<float>(framebufferHeight) * 0.82f);
+				}
 				if (signUpForm.emailConfirmationPending)
 				{
 					if (!signUpForm.status.empty())
@@ -2922,7 +3313,7 @@ void main()
 				};
 				appendCenteredPauseText(pauseLabel, pauseCellSize, pauseTop);
 				appendCenteredPauseText("RESUME", fpsCellSize * 1.5f, pauseTop + 18.0f * fpsCellSize);
-				appendCenteredPauseText("CONTROLS", fpsCellSize * 1.5f, pauseTop + 40.0f * fpsCellSize);
+				appendCenteredPauseText("SETTINGS", fpsCellSize * 1.5f, pauseTop + 40.0f * fpsCellSize);
 				appendCenteredPauseText("RANKS", fpsCellSize * 1.5f, pauseTop + 62.0f * fpsCellSize);
 				appendCenteredPauseText("SCENARIO RANKS", fpsCellSize * 1.5f, pauseTop + 84.0f * fpsCellSize);
 				appendCenteredPauseText(nameEditor.active ? "NAME " + nameEditor.text + "_" : std::string("NAME"), fpsCellSize * 1.5f, pauseTop + 104.0f * fpsCellSize);
@@ -2939,7 +3330,7 @@ void main()
 					fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
 				};
 				float settingsTitleSize = settingsCellSize * 1.5f;
-				appendCenteredSettingsText("CONTROLS", settingsTitleSize, static_cast<float>(framebufferHeight) * 0.10f);
+				appendCenteredSettingsText("SETTINGS", settingsTitleSize, static_cast<float>(framebufferHeight) * 0.10f);
 				appendCenteredSettingsText("BACK", settingsTitleSize, static_cast<float>(framebufferHeight) - 48.0f * settingsCellSize);
 				const std::array<std::string, 7> controlsText = {
 					"WASD MOVE", "MOUSE LOOK", "SPACE JUMP", "LMB SHOOT",
@@ -2965,6 +3356,10 @@ void main()
 				appendCenteredSettingsText("BALL SIZE: " + std::to_string(static_cast<int>(std::round(aimTargetSize * 100.0f))),
 					settingsCellSize, targetSizeLabelTop);
 				float targetSizeSliderY = targetSizeLabelTop + 7.0f * settingsCellSize;
+				float crosshairSelectorTop = sensitivityLabelTop + 36.0f * settingsCellSize;
+				float ballColorSelectorTop = sensitivityLabelTop + 48.0f * settingsCellSize;
+				appendCenteredSettingsText("CROSSHAIR: " + std::to_string(crosshairStyle + 1) + "/4", settingsCellSize, crosshairSelectorTop);
+				appendCenteredSettingsText("BALL COLOR: " + ballColorOptions[static_cast<std::size_t>(ballColorIndex)].name, settingsCellSize, ballColorSelectorTop);
 				for (int tick = 0; tick <= 40; ++tick)
 				{
 					float pixelX = sliderLeft + sliderWidth * static_cast<float>(tick) / 40.0f;
@@ -2992,11 +3387,13 @@ void main()
 				hudPlayerBallPosition.z >= aimTrainerMinZ && hudPlayerBallPosition.z <= aimTrainerMaxZ;
 			if (trainerHudVisible)
 			{
-				const std::array<std::string, 4> scenarioLabels = {
-					!sixBallsScenario && !twoBallsScenario && !trackingScenario ? "> 1 THREE BALLS" : "  1 THREE BALLS",
-					twoBallsScenario ? "> 2 TWO BALLS" : "  2 TWO BALLS",
-					sixBallsScenario ? "> 3 SIX BALLS" : "  3 SIX BALLS",
-					trackingScenario ? "> 4 TRACKING" : "  4 TRACKING"
+				const std::array<std::string, 6> scenarioLabels = {
+					!sixBallsScenario && !twoBallsScenario && !trackingScenario ? "> 1 THREESHOT" : "  1 THREESHOT",
+					twoBallsScenario ? "> 2 DUO SPEED CLICK" : "  2 DUO SPEED CLICK",
+					sixBallsScenario ? "> 3 SIX COINS" : "  3 SIX COINS",
+					trackingScenario && !trackingFarScenario && !trackingMediumScenario ? "> 4 SKY TRACK CLOSE EASY" : "  4 SKY TRACK CLOSE EASY",
+					trackingScenario && trackingFarScenario ? "> 5 SKY TRACK FAR EASY" : "  5 SKY TRACK FAR EASY",
+					trackingScenario && trackingMediumScenario ? "> 6 SKY TRACK CLOSE MEDIUM" : "  6 SKY TRACK CLOSE MEDIUM"
 				};
 				float selectorCellSize = fpsCellSize;
 				float selectorTop = 16.0f + 24.0f * fpsCellSize;
@@ -3018,7 +3415,44 @@ void main()
 					menuCellSize * 1.5f, static_cast<float>(framebufferHeight) - 48.0f * menuCellSize,
 					(static_cast<float>(framebufferWidth) - 17.0f * menuCellSize) * 0.5f);
 				fpsVertices.insert(fpsVertices.end(), backVertices.begin(), backVertices.end());
-				if (showingScenarioRanks)
+				if (showingScenarioRanks && showingLeaderboard)
+				{
+					auto appendCenteredLeaderboardText = [&](const std::string& text, float cellSize, float top)
+					{
+						float width = static_cast<float>(text.size() * 4 - 1) * cellSize;
+						std::vector<GLfloat> vertices = buildFpsVertices(text, framebufferWidth, framebufferHeight,
+							cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f);
+						fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
+					};
+					std::vector<LeaderboardEntry> leaderboardEntries;
+					std::string leaderboardStatus;
+					{
+						std::lock_guard<std::mutex> lock(leaderboardState->mutex);
+						leaderboardEntries = leaderboardState->entries;
+						leaderboardStatus = leaderboardState->status;
+					}
+					appendCenteredLeaderboardText(leaderboardScenarioNames[leaderboardScenarioIndex], menuCellSize * 2.0f, static_cast<float>(framebufferHeight) * 0.28f);
+					appendCenteredLeaderboardText("TOP 10", menuCellSize, static_cast<float>(framebufferHeight) * 0.36f);
+					if (leaderboardEntries.empty())
+					{
+						if (!leaderboardStatus.empty())
+							appendCenteredLeaderboardText(leaderboardStatus, menuCellSize * 1.5f, static_cast<float>(framebufferHeight) * 0.42f);
+					}
+					else
+					{
+						float rowTop = static_cast<float>(framebufferHeight) * 0.42f;
+						for (std::size_t rowIndex = 0; rowIndex < leaderboardEntries.size() && rowIndex < 10; ++rowIndex)
+						{
+							const LeaderboardEntry& entry = leaderboardEntries[rowIndex];
+							std::string row = std::to_string(entry.rank) + " " + entry.name.substr(0, 16) + " " + std::to_string(entry.score);
+							appendCenteredLeaderboardText(row, menuCellSize * 1.5f, rowTop + static_cast<float>(rowIndex) * 6.0f * menuCellSize);
+						}
+					}
+					appendCenteredLeaderboardText("MY SCORES", menuCellSize * 1.5f, static_cast<float>(framebufferHeight) * 0.66f);
+					rankVertexStart = static_cast<GLint>(fpsVertices.size() / 2);
+					rankVertexCount = 0;
+				}
+				else if (showingScenarioRanks)
 				{
 					auto appendCenteredScenarioText = [&](const std::string& text, float cellSize, float top)
 					{
@@ -3027,9 +3461,10 @@ void main()
 							cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f);
 						fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
 					};
-					appendCenteredScenarioText(trackingScenario ? "TRACKING" : sixBallsScenario ? "SIX BALLS" :
-						(twoBallsScenario ? "TWO BALLS" : "THREE BALLS"), menuCellSize * 2.0f, static_cast<float>(framebufferHeight) * 0.28f);
+					appendCenteredScenarioText(trackingScenario ? (trackingMediumScenario ? "SKY TRACK CLOSE MEDIUM" : trackingFarScenario ? "SKY TRACK FAR EASY" : "SKY TRACK CLOSE EASY") : sixBallsScenario ? "SIX COINS" :
+						(twoBallsScenario ? "DUO SPEED CLICK" : "THREESHOT"), menuCellSize * 2.0f, static_cast<float>(framebufferHeight) * 0.28f);
 					appendCenteredScenarioText("HIGH SCORE", menuCellSize, static_cast<float>(framebufferHeight) * 0.38f);
+					appendCenteredScenarioText("LEADERBOARD", menuCellSize * 1.5f, static_cast<float>(framebufferHeight) * 0.66f);
 					std::string scenarioRankName = getCurrentAimRank().name;
 					float rankTextWidth = static_cast<float>(scenarioRankName.size() * 4 - 1) * menuCellSize * 2.0f;
 					std::vector<GLfloat> scenarioRankVertices = buildFpsVertices(scenarioRankName, framebufferWidth, framebufferHeight,
@@ -3039,7 +3474,7 @@ void main()
 					rankVertexCount = static_cast<GLsizei>(scenarioRankVertices.size() / 2);
 					currentRankColor = getCurrentAimRank().color;
 					fpsVertices.insert(fpsVertices.end(), scenarioRankVertices.begin(), scenarioRankVertices.end());
-					appendCenteredScenarioText("SCORE " + std::to_string(sixBallsScenario ? sixBallsHighScore :
+					appendCenteredScenarioText("SCORE " + std::to_string(trackingScenario ? (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore)) : sixBallsScenario ? sixBallsHighScore :
 						(twoBallsScenario ? twoBallsHighScore : aimHighScore)), menuCellSize, static_cast<float>(framebufferHeight) * 0.60f);
 				}
 			}
@@ -3051,7 +3486,8 @@ void main()
 		if (!gamePaused)
 			camera.Inputs(true);
 
-		bool cameraJumpPressed = !gamePaused && platform::isKeyDown(platform::Key::Space);
+		playerMovementLocked = aimTaskRunning;
+		bool cameraJumpPressed = !gamePaused && !playerMovementLocked && platform::isKeyDown(platform::Key::Space);
 		jumpBufferRemaining = cameraJumpPressed
 			? 0.12f
 			: jumpBufferRemaining;
@@ -3092,10 +3528,10 @@ void main()
 			glm::vec3 cameraForward(std::cos(yawRadians), 0.0f, std::sin(yawRadians));
 			glm::vec3 cameraRight(-std::sin(yawRadians), 0.0f, std::cos(yawRadians));
 			glm::vec3 wishDirection(0.0f);
-			bool forwardPressed = platform::isKeyDown(platform::Key::W);
-			bool backwardPressed = platform::isKeyDown(platform::Key::S);
-			bool leftPressed = platform::isKeyDown(platform::Key::A);
-			bool rightPressed = platform::isKeyDown(platform::Key::D);
+			bool forwardPressed = !playerMovementLocked && platform::isKeyDown(platform::Key::W);
+			bool backwardPressed = !playerMovementLocked && platform::isKeyDown(platform::Key::S);
+			bool leftPressed = !playerMovementLocked && platform::isKeyDown(platform::Key::A);
+			bool rightPressed = !playerMovementLocked && platform::isKeyDown(platform::Key::D);
 			if (forwardPressed) wishDirection += cameraForward;
 			if (backwardPressed) wishDirection -= cameraForward;
 			if (leftPressed) wishDirection -= cameraRight;
@@ -3198,9 +3634,15 @@ void main()
 		bool threeBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num1);
 		bool sixBallsPressed = !gamePaused && platform::isKeyDown(platform::Key::Num3);
 		bool trackingPressed = !gamePaused && platform::isKeyDown(platform::Key::Num4);
-		if (twoBallsPressed && !previousTwoBallsKey)		{
+		bool trackingFarPressed = !gamePaused && platform::isKeyDown(platform::Key::Num5);
+		bool trackingMediumPressed = !gamePaused && platform::isKeyDown(platform::Key::Num6);
+		if (twoBallsPressed && !previousTwoBallsKey)
+		{
 			twoBallsScenario = true;
 			sixBallsScenario = false;
+			trackingScenario = false;
+			trackingFarScenario = false;
+			trackingMediumScenario = false;
 			aimTaskRunning = false;
 			aimTaskFinished = false;
 			aimTaskScore = 0;
@@ -3209,6 +3651,9 @@ void main()
 		{
 			twoBallsScenario = false;
 			sixBallsScenario = false;
+			trackingScenario = false;
+			trackingFarScenario = false;
+			trackingMediumScenario = false;
 			aimTaskRunning = false;
 			aimTaskFinished = false;
 			aimTaskScore = 0;
@@ -3217,6 +3662,9 @@ void main()
 		{
 			twoBallsScenario = false;
 			sixBallsScenario = true;
+			trackingScenario = false;
+			trackingFarScenario = false;
+			trackingMediumScenario = false;
 			aimTaskRunning = false;
 			aimTaskFinished = false;
 			aimTaskScore = 0;
@@ -3228,17 +3676,48 @@ void main()
 			twoBallsScenario = false;
 			sixBallsScenario = false;
 			trackingScenario = true;
+			trackingFarScenario = false;
+			trackingMediumScenario = false;
 			aimTaskRunning = false;
 			aimTaskFinished = false;
 			aimTaskScore = 0;
 			trackingScoreAccumulator = 0.0f;
 		}
+		if (trackingFarPressed && !previousTrackingFarKey)
+		{
+			twoBallsScenario = false;
+			sixBallsScenario = false;
+			trackingScenario = true;
+			trackingFarScenario = true;
+			trackingMediumScenario = false;
+			aimTaskRunning = false;
+			aimTaskFinished = false;
+			aimTaskScore = 0;
+			trackingScoreAccumulator = 0.0f;
+		}
+		if (trackingMediumPressed && !previousTrackingMediumKey)
+		{
+			twoBallsScenario = false;
+			sixBallsScenario = false;
+			trackingScenario = true;
+			trackingFarScenario = false;
+			trackingMediumScenario = true;
+			aimTaskRunning = false;
+			aimTaskFinished = false;
+			aimTaskScore = 0;
+			trackingScoreAccumulator = 0.0f;
+		}
+		previousTrackingMediumKey = trackingMediumPressed;
+		previousTrackingFarKey = trackingFarPressed;
 		previousSixBallsKey = sixBallsPressed;
 		previousTrackingKey = trackingPressed;
 
 		bool crosshairKeyPressed = platform::isKeyDown(platform::Key::C);
 		if (crosshairKeyPressed && !previousCrosshairKey)
+		{
 			crosshairStyle = (crosshairStyle + 1) % 4;
+			saveSelectorIndex(getCrosshairStylePath(), crosshairStyle);
+		}
 		previousCrosshairKey = crosshairKeyPressed;
 		bool ranksKeyPressed = platform::isKeyDown(platform::Key::R);
 		if (ranksKeyPressed && !previousRanksKey && !gamePaused)
@@ -3305,17 +3784,31 @@ void main()
 			aimTaskScore = 0;
 			aimTaskFinished = false;
 			aimTaskRunning = true;
+			playerMovementLocked = true;
 			aimTaskStartTime = currentTime;
+			trackingHadError = false;
 			if (sixBallsScenario)
 				randomizeSixBallTargets();
 		}
 		if (!gamePaused)
 			wasAimTrainerActive = aimTrainerActive;
+		trackingSoundCooldown = std::max(0.0f, trackingSoundCooldown - deltaTime);
 		if (!gamePaused && aimTaskRunning && trackingScenario)
 		{
 			float trackingElapsed = static_cast<float>(aimTaskClockTime - aimTaskStartTime);
-			trackingBallPosition.x = 4.0f * std::sin(trackingElapsed * 0.9f) + 2.0f * std::sin(trackingElapsed * 0.37f);
-			trackingBallPosition.y = ballGroundY + 4.0f + 1.5f * std::sin(trackingElapsed * 0.6f + 1.0f);
+			if (trackingMediumScenario)
+			{
+				trackingBallPosition.x = 7.0f * std::sin(trackingElapsed * 1.7f) + 3.5f * std::sin(trackingElapsed * 2.9f + 0.5f)
+					+ 2.0f * std::sin(trackingElapsed * 0.53f);
+				trackingBallPosition.y = ballGroundY + 4.0f + 2.5f * std::sin(trackingElapsed * 1.3f + 1.0f)
+					+ 1.0f * std::sin(trackingElapsed * 3.1f);
+			}
+			else
+			{
+				trackingBallPosition.x = (trackingFarScenario ? trackingFarOffsetX : 0.0f)
+					+ 4.0f * std::sin(trackingElapsed * 0.9f) + 2.0f * std::sin(trackingElapsed * 0.37f);
+				trackingBallPosition.y = ballGroundY + 4.0f + 1.5f * std::sin(trackingElapsed * 0.6f + 1.0f);
+			}
 			trackingBallPosition.z = -26.0f;
 		}
 		if (!gamePaused && aimTaskRunning && twoBallsScenario)
@@ -3344,13 +3837,29 @@ void main()
 			float alongRay = glm::dot(toBall, rayDirection);
 			float closestDistance = glm::length(toBall - rayDirection * alongRay);
 			if (alongRay > 0.0f && closestDistance <= aimTargetSize * 2.0f * trackingBallSizeMultiplier)
+			{
 				trackingScoreAccumulator += trackingPointsPerSecond * deltaTime;
-			aimTaskScore = static_cast<int>(trackingScoreAccumulator);
+				if (trackingSoundCooldown <= 0.0f)
+				{
+					trackingSoundCooldown = trackingSoundInterval;
+#ifdef _WIN32
+					PlaySoundA(reinterpret_cast<LPCSTR>(adjustedAimTargetHitSound.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+#else
+					playPortableSound(true);
+#endif
+				}
+			}
+			else
+			{
+				trackingHadError = true;
+			}
+			aimTaskScore = static_cast<int>(std::round(trackingScoreAccumulator));
 		}
 		if (!gamePaused && aimTaskRunning && aimTaskClockTime - aimTaskStartTime >= aimTaskDurationSeconds)
 		{
 			aimTaskRunning = false;
 			aimTaskFinished = true;
+			playerMovementLocked = false;
 			aimTaskFinishedTime = currentTime;
 			if (sixBallsScenario)
 				completedSixBallsOnce = true;
@@ -3358,10 +3867,12 @@ void main()
 				completedTwoBallsOnce = true;
 			else
 				completedThreeBallsOnce = true;
-			int& scenarioHighScore = trackingScenario ? trackingHighScore : (sixBallsScenario ? sixBallsHighScore :
+			int& scenarioHighScore = trackingScenario ? (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore)) : (sixBallsScenario ? sixBallsHighScore :
 				(twoBallsScenario ? twoBallsHighScore : aimHighScore));
-			const fs::path& scenarioHighScorePath = trackingScenario ? trackingHighScorePath : (sixBallsScenario ? sixBallsHighScorePath :
+			const fs::path& scenarioHighScorePath = trackingScenario ? (trackingMediumScenario ? trackingMediumHighScorePath : (trackingFarScenario ? trackingFarHighScorePath : trackingHighScorePath)) : (sixBallsScenario ? sixBallsHighScorePath :
 				(twoBallsScenario ? twoBallsHighScorePath : aimHighScorePath));
+			if (trackingScenario && !trackingHadError && aimTaskScore > 0)
+				aimTaskScore = std::max(aimTaskScore, aimRanks.back().minimumScore);
 			if (aimTaskScore > scenarioHighScore)
 			{
 				scenarioHighScore = aimTaskScore;
@@ -3373,12 +3884,14 @@ void main()
 					int twoBallsBestScore = twoBallsHighScore;
 					int sixBallsBestScore = sixBallsHighScore;
 					int trackingBestScore = trackingHighScore;
+					int farTrackingBestScore = trackingFarHighScore;
+					int mediumTrackingBestScore = trackingMediumHighScore;
 					try
 					{
 						rankSyncThreads.emplace_back([sessionToken = std::move(sessionToken), aimBestScore,
-							twoBallsBestScore, sixBallsBestScore, trackingBestScore]() mutable
+							twoBallsBestScore, sixBallsBestScore, trackingBestScore, farTrackingBestScore, mediumTrackingBestScore]() mutable
 						{
-							sendRankScores(sessionToken, aimBestScore, twoBallsBestScore, sixBallsBestScore, trackingBestScore);
+							sendRankScores(sessionToken, aimBestScore, twoBallsBestScore, sixBallsBestScore, trackingBestScore, farTrackingBestScore, mediumTrackingBestScore);
 						});
 					}
 					catch (const std::system_error&)
@@ -3386,6 +3899,8 @@ void main()
 					}
 				}
 			}
+			aimTaskScore = 0;
+			trackingScoreAccumulator = 0.0f;
 		}
 		if (aimTrainerActive)
 		{
@@ -3418,14 +3933,14 @@ void main()
 				float selectorRowSpacing = 6.0f * selectorCellSize;
 				int clickedRow = static_cast<int>(std::round((clickY - selectorTop) / selectorRowSpacing));
 				float clickedRowTop = selectorTop + static_cast<float>(clickedRow) * selectorRowSpacing;
-				const std::array<std::string, 4> selectorLabels = {
-					"  1 THREE BALLS", "  2 TWO BALLS", "  3 SIX BALLS", "  4 TRACKING"
+				const std::array<std::string, 6> selectorLabels = {
+					"  1 THREESHOT", "  2 DUO SPEED CLICK", "  3 SIX COINS", "  4 SKY TRACK CLOSE EASY", "  5 SKY TRACK FAR EASY", "  6 SKY TRACK CLOSE MEDIUM"
 				};
-				float rowLabelWidth = clickedRow >= 0 && clickedRow < 4
+				float rowLabelWidth = clickedRow >= 0 && clickedRow < 6
 					? static_cast<float>(selectorLabels[static_cast<std::size_t>(clickedRow)].size() * 4 - 1) * selectorCellSize
 					: 0.0f;
 				float rowLabelLeft = (static_cast<float>(selectorFramebufferWidth) - rowLabelWidth) * 0.5f;
-				if (clickedRow >= 0 && clickedRow < 4 &&
+				if (clickedRow >= 0 && clickedRow < 6 &&
 					clickY >= clickedRowTop - 5.0f * selectorCellSize &&
 					clickY <= clickedRowTop + selectorCellSize &&
 					clickX >= rowLabelLeft - 2.0f * selectorCellSize &&
@@ -3436,6 +3951,8 @@ void main()
 						twoBallsScenario = false;
 						sixBallsScenario = false;
 						trackingScenario = false;
+						trackingFarScenario = false;
+						trackingMediumScenario = false;
 						scenarioSelectorClicked = true;
 					}
 					else if (clickedRow == 1 && !twoBallsScenario)
@@ -3443,6 +3960,8 @@ void main()
 						twoBallsScenario = true;
 						sixBallsScenario = false;
 						trackingScenario = false;
+						trackingFarScenario = false;
+						trackingMediumScenario = false;
 						scenarioSelectorClicked = true;
 					}
 					else if (clickedRow == 2 && !sixBallsScenario)
@@ -3450,13 +3969,35 @@ void main()
 						twoBallsScenario = false;
 						sixBallsScenario = true;
 						trackingScenario = false;
+						trackingFarScenario = false;
+						trackingMediumScenario = false;
 						scenarioSelectorClicked = true;
 					}
-					else if (clickedRow == 3 && !trackingScenario)
+					else if (clickedRow == 3 && (!trackingScenario || trackingFarScenario || trackingMediumScenario))
 					{
 						twoBallsScenario = false;
 						sixBallsScenario = false;
 						trackingScenario = true;
+						trackingFarScenario = false;
+						trackingMediumScenario = false;
+						scenarioSelectorClicked = true;
+					}
+					else if (clickedRow == 4 && (!trackingFarScenario || trackingMediumScenario))
+					{
+						twoBallsScenario = false;
+						sixBallsScenario = false;
+						trackingScenario = true;
+						trackingFarScenario = true;
+						trackingMediumScenario = false;
+						scenarioSelectorClicked = true;
+					}
+					else if (clickedRow == 5 && !trackingMediumScenario)
+					{
+						twoBallsScenario = false;
+						sixBallsScenario = false;
+						trackingScenario = true;
+						trackingFarScenario = false;
+						trackingMediumScenario = true;
 						scenarioSelectorClicked = true;
 					}
 					if (scenarioSelectorClicked)
@@ -3557,12 +4098,6 @@ void main()
 			glUniform1f(shadowOpacityLocation, opacity);
 			glDrawArrays(GL_TRIANGLES, 0, 6);
 		};
-		drawShadow(
-			(prismWorldMinimum.x + prismWorldMaximum.x) * 0.5f,
-			(prismWorldMinimum.z + prismWorldMaximum.z) * 0.5f,
-			(prismWorldMaximum.x - prismWorldMinimum.x) * 0.55f,
-			(prismWorldMaximum.z - prismWorldMinimum.z) * 0.55f,
-			0.32f);
 		for (std::size_t ballIndex = 0; ballIndex < balls.size(); ++ballIndex)
 		{
 			glm::vec3 ballShadowPosition = balls[ballIndex].position;
@@ -3577,7 +4112,6 @@ void main()
 		glBindVertexArray(0);
 		glDepthMask(GL_TRUE);
 		glDisable(GL_BLEND);
-		prismModel.DrawWithBaseColor(shaderProgram, camera, prismPosition, glm::vec3(1.0f, 0.0f, 0.0f), prismScale);
 		for (std::size_t ballIndex = 0; ballIndex < balls.size(); ++ballIndex)
 		{
 			glm::vec3 ballRenderPosition = balls[ballIndex].position;
@@ -3587,7 +4121,7 @@ void main()
 				? glm::vec3(playerBallVisualScale)
 				: glm::vec3(1.0f);
 			glm::mat4 renderRotation = ballIndex == playerBallIndex ? playerBallRotation : glm::mat4(1.0f);
-			orbModel.DrawWithTint(shaderProgram, camera, ballRenderPosition, glm::vec3(1.0f, 0.12f, 0.12f), renderScale, renderRotation);
+			orbModel.DrawWithTint(shaderProgram, camera, ballRenderPosition, ballColorOptions[static_cast<std::size_t>(ballColorIndex)].color, renderScale, renderRotation);
 		}
 		if (sixBallsScenario)
 		{
@@ -3595,23 +4129,23 @@ void main()
 			{
 				if (sixBallTargetVisible[targetIndex])
 					orbModel.DrawWithTint(shaderProgram, camera, sixBallTargets[targetIndex],
-						glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(aimTargetSize * sixBallTargetSizeMultiplier));
+						ballColorOptions[static_cast<std::size_t>(ballColorIndex)].color, glm::vec3(aimTargetSize * sixBallTargetSizeMultiplier));
 			}
 		}
 		else if (trackingScenario)
 		{
 			orbModel.DrawWithTint(shaderProgram, camera, trackingBallPosition,
-				glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(aimTargetSize * trackingBallSizeMultiplier));
+				ballColorOptions[static_cast<std::size_t>(ballColorIndex)].color, glm::vec3(aimTargetSize * trackingBallSizeMultiplier));
 		}
 		else if (twoBallsScenario)
 		{
 			for (const glm::vec3& targetPosition : twoBallTargets)
-				orbModel.DrawWithTint(shaderProgram, camera, targetPosition, glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(aimTargetSize));
+				orbModel.DrawWithTint(shaderProgram, camera, targetPosition, ballColorOptions[static_cast<std::size_t>(ballColorIndex)].color, glm::vec3(aimTargetSize));
 		}
 		else
 		{
 			for (const glm::vec3& targetPosition : aimTargets)
-				orbModel.DrawWithTint(shaderProgram, camera, targetPosition, glm::vec3(1.0f, 0.12f, 0.12f), glm::vec3(aimTargetSize));
+				orbModel.DrawWithTint(shaderProgram, camera, targetPosition, ballColorOptions[static_cast<std::size_t>(ballColorIndex)].color, glm::vec3(aimTargetSize));
 		}
 		camera.Position = simulationCameraPosition;
 		camera.Orientation = simulationOrientation;
@@ -3677,6 +4211,9 @@ void main()
 
 	if (signUpAuthThread.joinable())
 		signUpAuthThread.join();
+	googleSignInShutdown = true;
+	if (googleSignInThread.joinable())
+		googleSignInThread.join();
 	for (std::thread& rankSyncThread : rankSyncThreads)
 		if (rankSyncThread.joinable())
 			rankSyncThread.join();

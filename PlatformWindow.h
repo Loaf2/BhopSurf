@@ -31,6 +31,8 @@ enum class Key
 	Num2,
 	Num3,
 	Num4,
+	Num5,
+	Num6,
 	C,
 	R,
 	Count

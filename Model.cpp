@@ -1,5 +1,4 @@
-#define GLM_ENABLE_EXPERIMENTAL
-#include"Model.h"
+#include "Model.h"
 #include <filesystem>
 #include <algorithm>
 #include <limits>
@@ -272,8 +271,8 @@ std::vector<unsigned char> Model::getData()
 	bytesText = get_file_contents(binaryFile.c_str());
 
 
-	std::vector<unsigned char> data(bytesText.begin(), bytesText.end());
-	return data;
+	std::vector<unsigned char> bytes(bytesText.begin(), bytesText.end());
+	return bytes;
 }
 
 std::vector<float> Model::getFloats(json accessor)
