@@ -24,6 +24,7 @@ int g_windowedX = 100;
 int g_windowedY = 100;
 int g_windowedWidth = 1280;
 int g_windowedHeight = 720;
+double g_scrollWheelAccum = 0.0;
 
 int toGlfwKey(Key key)
 {
@@ -123,10 +124,13 @@ void glfwFramebufferSizeCallback(GLFWwindow*, int width, int height)
 		g_framebufferCallback(width, height);
 }
 
-void glfwMouseButtonCallback(GLFWwindow*, int button, int action, int)
+void glfwMouseButtonCallback(GLFWwindow*, int, int, int)
 {
-	if (button == GLFW_MOUSE_BUTTON_MIDDLE && action == GLFW_PRESS && g_window != nullptr)
-		glfwSetWindowShouldClose(g_window, GLFW_TRUE);
+}
+
+void glfwScrollCallback(GLFWwindow*, double, double yoffset)
+{
+	g_scrollWheelAccum += yoffset;
 }
 }
 
@@ -201,6 +205,7 @@ bool createWindow(int& width, int& height)
 	glfwSetCharCallback(g_window, glfwCharCallback);
 	glfwSetKeyCallback(g_window, glfwKeyCallback);
 	glfwSetMouseButtonCallback(g_window, glfwMouseButtonCallback);
+	glfwSetScrollCallback(g_window, glfwScrollCallback);
 	glfwSetInputMode(g_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 	glfwSwapInterval(0);
 
@@ -251,6 +256,18 @@ bool isLeftMouseDown()
 	return g_window != nullptr && glfwGetMouseButton(g_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
 }
 
+bool isMiddleMouseDown()
+{
+	return g_window != nullptr && glfwGetMouseButton(g_window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+}
+
+double consumeScrollWheel()
+{
+	const double delta = g_scrollWheelAccum;
+	g_scrollWheelAccum = 0.0;
+	return delta;
+}
+
 void getCursorPosition(double& x, double& y)
 {
 	if (g_window != nullptr)
@@ -272,6 +289,11 @@ void setCursorCaptured(bool captured)
 {
 	if (g_window != nullptr)
 		glfwSetInputMode(g_window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+}
+
+bool isCursorCaptured()
+{
+	return g_window != nullptr && glfwGetInputMode(g_window, GLFW_CURSOR) == GLFW_CURSOR_DISABLED;
 }
 
 double getTime()

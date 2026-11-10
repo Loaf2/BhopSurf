@@ -45,6 +45,8 @@ await using (var connection = await dataSource.OpenConnectionAsync())
             tracking_best_score INTEGER NOT NULL DEFAULT 0,
             far_tracking_best_score INTEGER NOT NULL DEFAULT 0,
             medium_tracking_best_score INTEGER NOT NULL DEFAULT 0,
+            far_medium_tracking_best_score INTEGER NOT NULL DEFAULT 0,
+            pineapple_best_score INTEGER NOT NULL DEFAULT 0,
             display_name VARCHAR(64) NULL
         );
         """, connection);
@@ -59,6 +61,8 @@ await using (var connection = await dataSource.OpenConnectionAsync())
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tracking_best_score INTEGER NOT NULL DEFAULT 0; " +
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS far_tracking_best_score INTEGER NOT NULL DEFAULT 0; " +
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS medium_tracking_best_score INTEGER NOT NULL DEFAULT 0; " +
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS far_medium_tracking_best_score INTEGER NOT NULL DEFAULT 0; " +
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pineapple_best_score INTEGER NOT NULL DEFAULT 0; " +
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS display_name VARCHAR(64) NULL; " +
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS google_subject VARCHAR(255) NULL; " +
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_accounts_google_subject ON accounts (google_subject) WHERE google_subject IS NOT NULL;", connection);
@@ -225,15 +229,16 @@ app.MapGet("/api/ranks", async (HttpRequest request, CancellationToken cancellat
 
     await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
     await using var command = new NpgsqlCommand(
-        "SELECT aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score, far_tracking_best_score, medium_tracking_best_score FROM accounts WHERE id = @account_id;", connection);
+        "SELECT aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score, " +
+        "far_tracking_best_score, medium_tracking_best_score, far_medium_tracking_best_score, pineapple_best_score FROM accounts WHERE id = @account_id;", connection);
     command.Parameters.AddWithValue("account_id", accountId.Value);
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     if (!await reader.ReadAsync(cancellationToken))
         return Results.Unauthorized();
-    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5)));
+    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5), reader.GetInt32(6), reader.GetInt32(7)));
 });
 
-app.MapGet("/api/leaderboard", async (string? scenario, HttpRequest request, CancellationToken cancellationToken) =>
+app.MapGet("/api/leaderboard", async (string? scenario, HttpRequest request, NpgsqlDataSource dataSource, CancellationToken cancellationToken) =>
 {
     Guid? accountId = await GetSessionAccountIdAsync(request, dataSource, cancellationToken);
     if (accountId is null)
@@ -257,8 +262,8 @@ app.MapGet("/api/leaderboard", async (string? scenario, HttpRequest request, Can
 
 app.MapPut("/api/ranks", async (RankScores scores, HttpRequest request, CancellationToken cancellationToken) =>
 {
-    if (scores.AimBestScore < 0 || scores.TwoBallsBestScore < 0 || scores.SixBallsBestScore < 0 || scores.TrackingBestScore < 0 || scores.FarTrackingBestScore < 0 || scores.MediumTrackingBestScore < 0)
-        return Results.BadRequest(new { error = "Scores cannot be negative." });
+    scores.FarMediumTrackingBestScore < 0 || scores.PineappleBestScore < 0)
+        return Results.BadRequest
 
     Guid? accountId = await GetSessionAccountIdAsync(request, dataSource, cancellationToken);
     if (accountId is null)
@@ -272,23 +277,41 @@ app.MapPut("/api/ranks", async (RankScores scores, HttpRequest request, Cancella
         "six_balls_best_score = GREATEST(six_balls_best_score, @six_balls_best_score), " +
         "tracking_best_score = GREATEST(tracking_best_score, @tracking_best_score), " +
         "far_tracking_best_score = GREATEST(far_tracking_best_score, @far_tracking_best_score), " +
-        "medium_tracking_best_score = GREATEST(medium_tracking_best_score, @medium_tracking_best_score) " +
+        "medium_tracking_best_score = GREATEST(medium_tracking_best_score, @medium_tracking_best_score), " +
+        "far_medium_tracking_best_score = GREATEST(far_medium_tracking_best_score, @far_medium_tracking_best_score), " +
+        "pineapple_best_score = GREATEST(pineapple_best_score, @pineapple_best_score) " +
         "WHERE id = @account_id " +
-        "RETURNING aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score, far_tracking_best_score, medium_tracking_best_score;", connection);
+        "RETURNING aim_best_score, two_balls_best_score, six_balls_best_score, tracking_best_score, far_tracking_best_score, medium_tracking_best_score, far_medium_tracking_best_score, pineapple_best_score;", connection);
     command.Parameters.AddWithValue("aim_best_score", scores.AimBestScore);
     command.Parameters.AddWithValue("two_balls_best_score", scores.TwoBallsBestScore);
     command.Parameters.AddWithValue("six_balls_best_score", scores.SixBallsBestScore);
     command.Parameters.AddWithValue("tracking_best_score", scores.TrackingBestScore);
     command.Parameters.AddWithValue("far_tracking_best_score", scores.FarTrackingBestScore);
     command.Parameters.AddWithValue("medium_tracking_best_score", scores.MediumTrackingBestScore);
+    command.Parameters.AddWithValue("far_medium_tracking_best_score", scores.FarMediumTrackingBestScore);
+    command.Parameters.AddWithValue("pineapple_best_score", scores.PineappleBestScore);
     command.Parameters.AddWithValue("account_id", accountId.Value);
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     if (!await reader.ReadAsync(cancellationToken))
         return Results.Unauthorized();
-    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5)));
+    return Results.Ok(new RankScores(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5), reader.GetInt32(6), reader.GetInt32(7)));
 });
 
-app.MapGet("/api/auth/google/start", (string? returnTo) =>
+app.MapPost("/api/ranks/aim/reset", async (HttpRequest request, CancellationToken cancellationToken) =>
+{
+    Guid? accountId = await GetSessionAccountIdAsync(request, dataSource, cancellationToken);
+    if (accountId is null)
+        return Results.Unauthorized();
+
+    await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+    await using var command = new NpgsqlCommand(
+        "UPDATE accounts SET aim_best_score = 0 WHERE id = @account_id;", connection);
+    command.Parameters.AddWithValue("account_id", accountId.Value);
+    int rows = await command.ExecuteNonQueryAsync(cancellationToken);
+    return rows == 1 ? Results.Ok(new { aimBestScore = 0 }) : Results.Unauthorized();
+});
+
+app.MapGet("/api/auth/google", (string? returnTo) =>
 {
     if (string.IsNullOrWhiteSpace(googleClientId) || string.IsNullOrWhiteSpace(googleClientSecret))
         return Results.Problem("Google sign-in is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable);
@@ -530,7 +553,7 @@ static async Task<bool> SendConfirmationEmailAsync(
 
 sealed record AuthRequest(string? Email, string? Password);
 sealed record ResendConfirmationRequest(string? Email);
-sealed record RankScores(int AimBestScore, int TwoBallsBestScore, int SixBallsBestScore, int TrackingBestScore = 0, int FarTrackingBestScore = 0, int MediumTrackingBestScore = 0);
+sealed record RankScores(int AimBestScore, int TwoBallsBestScore, int SixBallsBestScore, int TrackingBestScore = 0, int FarTrackingBestScore = 0, int MediumTrackingBestScore = 0, int FarMediumTrackingBestScore = 0, int PineappleBestScore = 0);
 sealed record LeaderboardEntry(string Name, int Score, int Rank);
 sealed record GoogleProfile(string Subject, string Email, string Name);
 sealed record PendingGoogleLogin(string ClientRedirect, DateTime ExpiresAtUtc);
@@ -550,7 +573,9 @@ static class LeaderboardColumns
         ["six_balls"] = "six_balls_best_score",
         ["tracking"] = "tracking_best_score",
         ["tracking_far"] = "far_tracking_best_score",
-        ["tracking_medium"] = "medium_tracking_best_score"
+        ["tracking_medium"] = "medium_tracking_best_score",
+        ["tracking_far_medium"] = "far_medium_tracking_best_score",
+        ["pineapple"] = "pineapple_best_score"
     };
 
     public static bool TryGetValue(string scenario, out string? column) => columns.TryGetValue(scenario, out column);

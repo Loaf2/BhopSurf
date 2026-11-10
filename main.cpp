@@ -225,6 +225,11 @@ fs::path getTrackingFarMediumHighScorePath()
 	return getApplicationDataDirectory() / "tracking_far_medium_highscore.txt";
 }
 
+fs::path getTrackingCloseHardHighScorePath()
+{
+	return getApplicationDataDirectory() / "tracking_close_hard_highscore.txt";
+}
+
 fs::path getMouseSensitivityPath()
 {
 	return getApplicationDataDirectory() / "sensitivity.txt";
@@ -1194,8 +1199,8 @@ struct LeaderboardState
 	int requestId = 0;
 };
 
-constexpr std::array<const char*, 8> leaderboardScenarioIds = { "aim", "two_balls", "six_balls", "tracking", "tracking_far", "tracking_medium", "tracking_far_medium", "pineapple_click_close_easy" };
-constexpr std::array<const char*, 8> leaderboardScenarioNames = { "THREESHOT", "DUO SPEED CLICK", "SIX COINS", "SKY TRACK CLOSE EASY", "SKY TRACK FAR EASY", "SKY TRACK CLOSE MEDIUM", "SKY TRACK FAR MEDIUM", "PINEAPPLE CLICK CLOSE EASY" };
+constexpr std::array<const char*, 9> leaderboardScenarioIds = { "aim", "two_balls", "six_balls", "tracking", "tracking_far", "tracking_medium", "tracking_far_medium", "tracking_close_hard", "pineapple_click_close_easy" };
+constexpr std::array<const char*, 9> leaderboardScenarioNames = { "THREESHOT", "DUO SPEED CLICK", "SIX COINS", "SKY TRACK CLOSE EASY", "SKY TRACK FAR EASY", "SKY TRACK CLOSE MEDIUM", "SKY TRACK FAR MEDIUM", "SKY TRACK CLOSE HARD", "PINEAPPLE CLICK CLOSE EASY" };
 
 void parseLeaderboardEntries(const std::string& json, std::vector<LeaderboardEntry>& entries)
 {
@@ -1728,15 +1733,7 @@ void main()
 	vec3 nightZenith = vec3(0.012, 0.025, 0.075);
 	vec3 horizon = mix(nightHorizon, dayHorizon, dayAmount);
 	vec3 zenith = mix(nightZenith, dayZenith, dayAmount);
-	vec3 sky = mix(horizon, zenith, smoothstep(0.30, 0.96, height));
-	vec2 cloudUv = direction.xz / max(direction.y + 0.28, 0.12);
-	cloudUv = cloudUv * 2.1 + vec2(cloudTime * 0.012, cloudTime * 0.004);
-	float clouds = smoothstep(0.53, 0.70, cloudNoise(cloudUv));
-	float cloudVisibility = smoothstep(-0.04, 0.28, direction.y);
-	float cloudAmount = clouds * cloudVisibility * 0.82;
-	vec3 cloudColor = mix(vec3(0.24, 0.27, 0.36), vec3(0.98, 0.99, 1.0), dayAmount);
-	sky = mix(sky, cloudColor, cloudAmount);
-	FragColor = vec4(sky, 1.0);
+	FragColor = vec4(0.72, 0.73, 0.75, 1.0);
 })GLSL";
 	auto compileSkyboxShader = [](GLenum type, const char* source)
 	{
@@ -2117,6 +2114,7 @@ void main()
 	};
 	std::array<bool, 6> sixBallTargetVisible = { true, true, true, true, true, true };
 	constexpr float sixBallTargetSizeMultiplier = 0.55f;
+	constexpr float pineappleTargetSizeMultiplier = 0.5f;
 	std::array<glm::vec3, 4> pineappleTargets = {
 		glm::vec3(0.0f, ballGroundY + 4.0f, -13.0f), glm::vec3(0.0f, ballGroundY + 4.0f, -17.0f),
 		glm::vec3(0.0f, ballGroundY + 4.0f, -21.0f), glm::vec3(0.0f, ballGroundY + 4.0f, -25.0f)
@@ -2135,10 +2133,10 @@ void main()
 	}
 	std::uniform_real_distribution<float> aimTargetX(aimTrainerMinX, aimTrainerMaxX);
 	std::uniform_real_distribution<float> aimTargetY(ballGroundY + 2.0f, ballGroundY + 8.0f);
-	std::uniform_real_distribution<float> aimTargetZ(-30.0f, -23.0f);
+	std::uniform_real_distribution<float> aimTargetZ(-40.0f, -33.0f);
 	std::uniform_real_distribution<float> sixBallTargetX(-6.0f, 6.0f);
 	std::uniform_real_distribution<float> sixBallTargetY(ballGroundY + 2.0f, ballGroundY + 8.0f);
-	std::uniform_real_distribution<float> sixBallTargetZ(-29.0f, -23.0f);
+	std::uniform_real_distribution<float> sixBallTargetZ(-39.0f, -33.0f);
 	auto randomizeSixBallTargets = [&]()
 	{
 		for (std::size_t targetIndex = 0; targetIndex < sixBallTargets.size(); ++targetIndex)
@@ -2209,20 +2207,51 @@ void main()
 	std::uniform_real_distribution<float> pineappleSharedX(-4.0f, 4.0f);
 	std::uniform_real_distribution<float> pineappleSharedY(ballGroundY + 2.5f, ballGroundY + 6.0f);
 	// Keep pineapple balls behind the player's aim-trainer Z range (aimTrainerMinZ..aimTrainerMaxZ = -20..-6).
-	constexpr std::array<float, 5> pineappleLayerZ = { -23.0f, -25.0f, -27.0f, -29.0f, -31.0f };
+	constexpr std::array<float, 5> pineappleLayerZ = { -33.0f, -35.0f, -37.0f, -39.0f, -41.0f };
+	// Pineapple balls sit on different depth layers, so overlap is checked in X/Y to keep them apart on screen.
+	// Compare projected screen positions (x / -z, y / -z), so balls at different depths don't stack on screen.
+	// Assumes the camera sits near the origin in X/Z; tune pineappleMinScreenDistance if spacing looks off.
+	constexpr float pineappleMinScreenDistance = 0.05f;
+	auto pineappleScreenOverlap = [](const glm::vec3& a, const glm::vec3& b)
+	{
+		glm::vec2 screenA(a.x / -a.z, a.y / -a.z);
+		glm::vec2 screenB(b.x / -b.z, b.y / -b.z);
+		return glm::length(screenA - screenB) < pineappleMinScreenDistance;
+	};
 	auto randomizePineappleTargets = [&]()
 	{
 		std::array<float, 5> layers = pineappleLayerZ;
 		std::shuffle(layers.begin(), layers.end(), aimTargetRandomEngine);
 		for (std::size_t targetIndex = 0; targetIndex < pineappleTargets.size(); ++targetIndex)
-			pineappleTargets[targetIndex] = glm::vec3(pineappleSharedX(aimTargetRandomEngine), pineappleSharedY(aimTargetRandomEngine), layers[targetIndex]);
+		{
+			glm::vec3 placed(pineappleSharedX(aimTargetRandomEngine), pineappleSharedY(aimTargetRandomEngine), layers[targetIndex]);
+			for (int attempt = 0; attempt < 100; ++attempt)
+			{
+				glm::vec3 candidate(pineappleSharedX(aimTargetRandomEngine), pineappleSharedY(aimTargetRandomEngine), layers[targetIndex]);
+				bool overlapsAnotherTarget = false;
+				for (std::size_t otherIndex = 0; otherIndex < targetIndex; ++otherIndex)
+				{
+					if (pineappleScreenOverlap(candidate, pineappleTargets[otherIndex]))
+					{
+						overlapsAnotherTarget = true;
+						break;
+					}
+				}
+				if (!overlapsAnotherTarget)
+				{
+					placed = candidate;
+					break;
+				}
+			}
+			pineappleTargets[targetIndex] = placed;
+		}
 	};
 	auto respawnPineappleTarget = [&](std::size_t targetIndex)
 	{
-		// Each ball gets a new random X/Y and moves to a depth layer no other ball uses.
+		// Each ball gets a depth layer no other ball uses and a new X/Y that doesn't overlap another ball.
 		std::array<float, 5> freeLayers = pineappleLayerZ;
-		std::shuffle(freeLayers.begin(), freeLayers.end(), aimTargetRandomEngine);
-		for (float layerZ : freeLayers)
+		std::size_t freeCount = 0;
+		for (float layerZ : pineappleLayerZ)
 		{
 			bool occupied = false;
 			for (std::size_t otherIndex = 0; otherIndex < pineappleTargets.size(); ++otherIndex)
@@ -2231,25 +2260,44 @@ void main()
 					occupied = true;
 			}
 			if (!occupied)
+				freeLayers[freeCount++] = layerZ;
+		}
+		if (freeCount == 0)
+			return;
+		for (int attempt = 0; attempt < 100; ++attempt)
+		{
+			glm::vec3 candidate(pineappleSharedX(aimTargetRandomEngine), pineappleSharedY(aimTargetRandomEngine), freeLayers[attempt % freeCount]);
+			bool overlapsAnotherTarget = false;
+			for (std::size_t otherIndex = 0; otherIndex < pineappleTargets.size(); ++otherIndex)
 			{
-				pineappleTargets[targetIndex] = glm::vec3(pineappleSharedX(aimTargetRandomEngine), pineappleSharedY(aimTargetRandomEngine), layerZ);
+				if (otherIndex != targetIndex && pineappleScreenOverlap(candidate, pineappleTargets[otherIndex]))
+				{
+					overlapsAnotherTarget = true;
+					break;
+				}
+			}
+			if (!overlapsAnotherTarget)
+			{
+				pineappleTargets[targetIndex] = candidate;
 				return;
 			}
 		}
+		pineappleTargets[targetIndex] = glm::vec3(pineappleSharedX(aimTargetRandomEngine), pineappleSharedY(aimTargetRandomEngine), freeLayers[0]);
 	};
 	auto respawnAimTarget = [&](std::size_t targetIndex)
 	{
 		glm::vec3 previousPosition = aimTargets[targetIndex];
-		for (int attempt = 0; attempt < 32; ++attempt)
+		// Overlap is checked in X/Y only, so targets at different depths don't line up on screen.
+		for (int attempt = 0; attempt < 256; ++attempt)
 		{
 			glm::vec3 candidate(aimTargetX(aimTargetRandomEngine), aimTargetY(aimTargetRandomEngine), aimTargetZ(aimTargetRandomEngine));
-			if (glm::length(candidate - previousPosition) < 2.5f)
+			if (glm::length(glm::vec2(candidate.x, candidate.y) - glm::vec2(previousPosition.x, previousPosition.y)) < 2.5f)
 				continue;
 
 			bool overlapsAnotherTarget = false;
 			for (std::size_t otherIndex = 0; otherIndex < aimTargets.size(); ++otherIndex)
 			{
-				if (otherIndex != targetIndex && glm::length(candidate - aimTargets[otherIndex]) < 2.5f)
+				if (otherIndex != targetIndex && glm::length(glm::vec2(candidate.x, candidate.y) - glm::vec2(aimTargets[otherIndex].x, aimTargets[otherIndex].y)) < 2.5f)
 				{
 					overlapsAnotherTarget = true;
 					break;
@@ -2269,7 +2317,7 @@ void main()
 		glm::vec3& target = twoBallTargets[targetIndex];
 		target.x = twoBallTargetSpawnX(aimTargetRandomEngine);
 		target.y = ballGroundY + (targetIndex == 0 ? 2.5f : 6.0f);
-		target.z = -26.0f;
+		target.z = -36.0f;
 		twoBallTargetDirections[targetIndex] = target.x < (twoBallTargetMinX + twoBallTargetMaxX) * 0.5f ? 1.0f : -1.0f;
 	};
 	constexpr double aimTaskDurationSeconds = 30.0;
@@ -2280,6 +2328,7 @@ void main()
 	const fs::path trackingFarHighScorePath = getTrackingFarHighScorePath();
 	const fs::path trackingMediumHighScorePath = getTrackingMediumHighScorePath();
 	const fs::path trackingFarMediumHighScorePath = getTrackingFarMediumHighScorePath();
+	const fs::path trackingCloseHardHighScorePath = getTrackingCloseHardHighScorePath();
 	const fs::path pineappleHighScorePath = getPineappleHighScorePath();
 	const fs::path sessionTokenPath = getSessionTokenPath();
 	const fs::path activationMarkerPath = getActivationMarkerPath();
@@ -2291,6 +2340,7 @@ void main()
 	int trackingFarHighScore = loadAimHighScore(trackingFarHighScorePath);
 	int trackingMediumHighScore = loadAimHighScore(trackingMediumHighScorePath);
 	int trackingFarMediumHighScore = loadAimHighScore(trackingFarMediumHighScorePath);
+	int trackingCloseHardHighScore = loadAimHighScore(trackingCloseHardHighScorePath);
 	int pineappleHighScore = loadAimHighScore(pineappleHighScorePath);
 	std::string authenticatedSessionToken = loadSessionToken(sessionTokenPath);
 	const std::string activatedEmail = loadSessionToken(activationMarkerPath);
@@ -2354,17 +2404,18 @@ void main()
 	bool trackingFarScenario = false;
 	bool trackingMediumScenario = false;
 	bool trackingFarMediumScenario = false;
+	bool trackingCloseHardScenario = false;
 	bool pineappleClickScenario = false;
 	bool previousMiddleMouse = false;
 	bool playerMovementLocked = false;
 	float trackingScoreAccumulator = 0.0f;
 	bool trackingHadError = false;
-	constexpr float trackingPointsPerSecond = 4000.0f / static_cast<float>(aimTaskDurationSeconds);
+	constexpr float trackingPointsPerSecond = 7000.0f / static_cast<float>(aimTaskDurationSeconds);
 	glm::vec3 trackingBallPosition(0.0f, ballGroundY + 4.0f, -26.0f);
 	constexpr float trackingBallSizeMultiplier = 1.0f;
+	constexpr float trackingCloseHardSizeMultiplier = 0.6f;
 	constexpr float trackingFarOffsetX = 14.0f;
 	constexpr float trackingFarMediumOffsetX = 24.0f;
-	constexpr float trackingSoundInterval = 0.1f;
 	float trackingSoundCooldown = 0.0f;
 	bool trackingBallHeld = false;
 	struct AimRank
@@ -2373,7 +2424,7 @@ void main()
 		int minimumScore;
 		glm::vec4 color;
 	};
-	const std::array<AimRank, 33> aimRanks = {{
+	const std::array<AimRank, 39> aimRanks = {{
 		{ "WOOD", 0, glm::vec4(0.48f, 0.27f, 0.12f, 1.0f) },
 		{ "BRONZE", 150, glm::vec4(0.72f, 0.38f, 0.20f, 1.0f) },
 		{ "SILVER", 300, glm::vec4(0.78f, 0.81f, 0.84f, 1.0f) },
@@ -2406,7 +2457,13 @@ void main()
 		{ "STAR III", 2350, glm::vec4(1.0f, 0.97f, 0.80f, 1.0f) },
 		{ "STELLAR I", 2500, glm::vec4(0.74f, 0.92f, 1.0f, 1.0f) },
 		{ "STELLAR II", 2650, glm::vec4(0.74f, 0.92f, 1.0f, 1.0f) },
-		{ "STELLAR III", 2800, glm::vec4(0.74f, 0.92f, 1.0f, 1.0f) }
+		{ "STELLAR III", 2800, glm::vec4(0.74f, 0.92f, 1.0f, 1.0f) },
+		{ "GALACTIC I", 3000, glm::vec4(0.45f, 0.20f, 0.95f, 1.0f) },
+		{ "GALACTIC II", 3200, glm::vec4(0.45f, 0.20f, 0.95f, 1.0f) },
+		{ "GALACTIC III", 3400, glm::vec4(0.45f, 0.20f, 0.95f, 1.0f) },
+		{ "INTERSTELLAR I", 3500, glm::vec4(0.95f, 0.45f, 0.85f, 1.0f) },
+		{ "INTERSTELLAR II", 3600, glm::vec4(0.95f, 0.45f, 0.85f, 1.0f) },
+		{ "INTERSTELLAR III", 3700, glm::vec4(0.95f, 0.45f, 0.85f, 1.0f) }
 	}};
 	auto getAimRankForScore = [&](int scenarioHighScore) -> const AimRank&
 	{
@@ -2430,16 +2487,21 @@ void main()
 		case 4: return trackingFarHighScore;
 		case 5: return trackingMediumHighScore;
 		case 6: return trackingFarMediumHighScore;
-		case 7: return pineappleHighScore;
+		case 7: return trackingCloseHardHighScore;
+		case 8: return pineappleHighScore;
 		default: return trackingMediumHighScore;
 		}
 	};
 	auto getCurrentScenarioIndex = [&]() -> std::size_t
 	{
 		if (trackingScenario)
+		{
+			if (trackingCloseHardScenario)
+				return 7;
 			return trackingFarMediumScenario ? 6 : (trackingMediumScenario ? 5 : (trackingFarScenario ? 4 : 3));
+		}
 		if (pineappleClickScenario)
-			return 7;
+			return 8;
 		if (sixBallsScenario)
 			return 2;
 		return twoBallsScenario ? 1 : 0;
@@ -2466,6 +2528,8 @@ void main()
 	std::size_t scenarioListScrollOffset = 0;
 	bool scenarioListDragging = false;
 	bool scenarioPanelVisible = false;
+	bool playerModelVisible = false;
+	bool hasStartedScenario = false;
 	auto getScenarioMaxRowChars = [&]() -> std::size_t
 	{
 		std::size_t maxChars = 0;
@@ -2480,6 +2544,16 @@ void main()
 	};
 	bool aimTaskRunning = false;
 	bool aimTaskFinished = false;
+	bool scenarioResultPage = false;
+	int scenarioResultScore = 0;
+	int scenarioResultHighScore = 0;
+	std::string scenarioResultName;
+	std::string scenarioResultRankName;
+	int scenarioResultAccuracy = 0;
+	int aimTaskShots = 0;
+	int aimTaskHits = 0;
+	float trackingOnTargetTime = 0.0f;
+	float trackingRunTime = 0.0f;
 	bool wasAimTrainerActive = false;
 	bool completedThreeBallsOnce = false;
 	bool completedTwoBallsOnce = false;
@@ -2530,8 +2604,8 @@ void main()
 	{
 		signUpForm.active = false;
 		signUpForm.complete = true;
-		gamePaused = false;
-		platform::setCursorCaptured(true);
+		gamePaused = true;
+		platform::setCursorCaptured(false);
 	}
 	else if (restoreAuthenticatedSession)
 	{
@@ -2544,8 +2618,8 @@ void main()
 	#ifdef AIMTRAINER_OFFLINE_BYPASS
 		signUpForm.active = false;
 		signUpForm.complete = true;
-		gamePaused = false;
-		platform::setCursorCaptured(true);
+		gamePaused = true;
+		platform::setCursorCaptured(false);
 	#endif
 		if (!isAuthApiConfigured())
 			signUpForm.status = "SET API URL";
@@ -2562,7 +2636,6 @@ void main()
 	bool previousPauseMouse = false;
 	bool draggingSensitivity = false;
 	bool draggingAudioVolume = false;
-	bool draggingAimTargetSize = false;
 	double pauseStartedAt = 0.0;
 	float cameraVerticalVelocity = 0.0f;
 	float jumpBufferRemaining = 0.0f;
@@ -2644,9 +2717,9 @@ void main()
 	fpsVertices.insert(fpsVertices.end(), aimTaskVertices.begin(), aimTaskVertices.end());
 	GLint rankVertexStart = 0;
 	GLsizei rankVertexCount = 0;
-	std::array<GLint, 33> rankLadderVertexStarts{};
-	std::array<GLsizei, 33> rankLadderVertexCounts{};
-	std::array<glm::vec4, 33> rankLadderColors{};
+	std::array<GLint, 39> rankLadderVertexStarts{};
+	std::array<GLsizei, 39> rankLadderVertexCounts{};
+	std::array<glm::vec4, 39> rankLadderColors{};
 	glm::vec4 currentRankColor = getCurrentAimRank().color;
 	bool rankLadderVisible = false;
 	glBindBuffer(GL_ARRAY_BUFFER, fpsVBO);
@@ -2840,6 +2913,12 @@ void main()
 		{
 			nameEditor.active = false;
 		}
+		else if (escapePressed && !previousEscape && scenarioResultPage)
+		{
+			scenarioResultPage = false;
+			aimTaskFinished = false;
+			scenarioListHidden = false;
+		}
 		else if (escapePressed && !previousEscape && !signUpForm.active)
 		{
 			pauseStateChanged = true;
@@ -2856,10 +2935,7 @@ void main()
 				showingRanks = false;
 				showingScenarioRanks = false;
 				camera.mouseInitialized = false;
-				// Resume captures the cursor and resets the cache, so the per-frame cursor check
-				// below releases it again if the scenario menu is still showing.
-				platform::setCursorCaptured(true);
-				scenarioMenuCursorFree = false;
+				// The per-frame cursor policy below sets the cursor state from the current screen.
 
 				aimTaskStartTime += currentTime - pauseStartedAt;
 			}
@@ -2870,6 +2946,8 @@ void main()
 				showingRanks = false;
 				showingScenarioRanks = false;
 				platform::setCursorCaptured(false);
+				scenarioMenuCursorFree = true;
+				camera.mouseInitialized = false;
 				pauseStartedAt = currentTime;
 				previousCameraPosition = camera.Position;
 			}
@@ -2884,7 +2962,7 @@ void main()
 		}
 		previousMiddleMouse = middleMousePressed;
 		bool pauseMousePressed = platform::isLeftMouseDown();
-		if (controlsMenuPage && !draggingSensitivity && !draggingAudioVolume && !draggingAimTargetSize &&
+		if (controlsMenuPage && !draggingSensitivity && !draggingAudioVolume &&
 			pauseMousePressed && !previousPauseMouse)
 		{
 			int sliderFramebufferWidth = 0;
@@ -2904,27 +2982,21 @@ void main()
 				float sensitivitySliderY = sensitivityLabelTop + 7.0f * cellSize;
 				float volumeLabelTop = sensitivityLabelTop + 14.0f * cellSize;
 				float volumeSliderY = volumeLabelTop + 7.0f * cellSize;
-				float targetSizeLabelTop = sensitivityLabelTop + 25.0f * cellSize;
-				float targetSizeSliderY = targetSizeLabelTop + 7.0f * cellSize;
 				if (clickX >= sliderLeft - 8.0f * cellSize && clickX <= sliderRight + 8.0f * cellSize &&
 					clickY >= sensitivitySliderY - 5.0f * cellSize && clickY <= sensitivitySliderY + 5.0f * cellSize)
 					draggingSensitivity = true;
 				else if (clickX >= sliderLeft - 8.0f * cellSize && clickX <= sliderRight + 8.0f * cellSize &&
 					clickY >= volumeSliderY - 5.0f * cellSize && clickY <= volumeSliderY + 5.0f * cellSize)
 					draggingAudioVolume = true;
-				else if (clickX >= sliderLeft - 8.0f * cellSize && clickX <= sliderRight + 8.0f * cellSize &&
-					clickY >= targetSizeSliderY - 5.0f * cellSize && clickY <= targetSizeSliderY + 5.0f * cellSize)
-					draggingAimTargetSize = true;
 			}
 		}
 		if (!pauseMousePressed)
 		{
 			draggingSensitivity = false;
 			draggingAudioVolume = false;
-			draggingAimTargetSize = false;
 		}
 		if (controlsMenuPage &&
-			(draggingSensitivity || draggingAudioVolume || draggingAimTargetSize) && pauseMousePressed)
+			(draggingSensitivity || draggingAudioVolume) && pauseMousePressed)
 		{
 			int sliderFramebufferWidth = 0;
 			int sliderFramebufferHeight = 0;
@@ -2943,13 +3015,6 @@ void main()
 					float amount = glm::clamp((clickX - sliderLeft) / sliderWidth, 0.0f, 1.0f);
 					camera.sensitivity = 0.02f + amount * 0.28f;
 					saveMouseSensitivity(mouseSensitivityPath, camera.sensitivity);
-					pauseStateChanged = true;
-				}
-				if (draggingAimTargetSize)
-				{
-					float amount = glm::clamp((clickX - sliderLeft) / sliderWidth, 0.0f, 1.0f);
-					aimTargetSize = 0.25f + amount * 0.75f;
-					saveAimTargetSize(aimTargetSizePath, aimTargetSize);
 					pauseStateChanged = true;
 				}
 				if (draggingAudioVolume)
@@ -3183,8 +3248,8 @@ void main()
 						trackingFarScenario = false;
 						trackingMediumScenario = false;
 						trackingFarMediumScenario = false;
+						trackingCloseHardScenario = false;
 						pineappleClickScenario = false;
-						gamePaused = false;
 						showingControls = false;
 						showingRanks = false;
 						showingScenarioRanks = false;
@@ -3313,7 +3378,9 @@ void main()
 			currentRankColor = getCurrentAimRank().color;
 			hudWindowStart = currentTime;
 			float horizontalSpeed = glm::length(glm::vec2(camera.horizontalVelocity.x, camera.horizontalVelocity.z));
-			speedLabel = "SPD: " + std::to_string(static_cast<int>(std::round(horizontalSpeed)));
+			{
+				speedLabel = "SPD: " + std::to_string(static_cast<int>(std::round(horizontalSpeed)));
+			}
 			platform::getFramebufferSize(framebufferWidth, framebufferHeight);
 			fpsCellSize = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
 			fpsVertices = (signUpForm.active || rankMenuPage || controlsMenuPage)
@@ -3327,7 +3394,7 @@ void main()
 				aimTaskSecondsRemaining = static_cast<int>(std::ceil(std::max(0.0, aimTaskDurationSeconds - (aimTaskClockTime - aimTaskStartTime))));
 			aimTaskLabel = "T:" + std::to_string(aimTaskSecondsRemaining) +
 				" H:" + std::to_string(aimTaskScore) +
-			" B:" + std::to_string(pineappleClickScenario ? pineappleHighScore : trackingScenario ? (trackingFarMediumScenario ? trackingFarMediumHighScore : (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore))) : (twoBallsScenario ? twoBallsHighScore : (sixBallsScenario ? sixBallsHighScore : aimHighScore)));
+			" B:" + std::to_string(pineappleClickScenario ? pineappleHighScore : trackingScenario ? (trackingCloseHardScenario ? trackingCloseHardHighScore : trackingFarMediumScenario ? trackingFarMediumHighScore : (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore))) : (twoBallsScenario ? twoBallsHighScore : (sixBallsScenario ? sixBallsHighScore : aimHighScore)));
 			aimTaskVertices = buildFpsVertices(aimTaskLabel, framebufferWidth, framebufferHeight, fpsCellSize, 16.0f + 18.0f * fpsCellSize);
 			if (!signUpForm.active && !rankMenuPage && !controlsMenuPage)
 			{
@@ -3352,7 +3419,7 @@ void main()
 				}
 #endif
 			}
-			int scenarioHighScore = pineappleClickScenario ? pineappleHighScore : trackingScenario ? (trackingFarMediumScenario ? trackingFarMediumHighScore : (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore))) : (twoBallsScenario ? twoBallsHighScore : (sixBallsScenario ? sixBallsHighScore : aimHighScore));
+			int scenarioHighScore = pineappleClickScenario ? pineappleHighScore : trackingScenario ? (trackingCloseHardScenario ? trackingCloseHardHighScore : trackingFarMediumScenario ? trackingFarMediumHighScore : (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore))) : (twoBallsScenario ? twoBallsHighScore : (sixBallsScenario ? sixBallsHighScore : aimHighScore));
 			int currentRankMinimumScore = getCurrentAimRank().minimumScore;
 			int nextRankMinimumScore = aimRanks.back().minimumScore;
 			if (currentRankMinimumScore < aimRanks.back().minimumScore)
@@ -3379,23 +3446,31 @@ void main()
 				appendCenteredRankText("CURRENT " + std::string(getCurrentAimRank().name), fpsCellSize,
 					static_cast<float>(framebufferHeight) * 0.19f);
 				std::size_t currentRankIndex = static_cast<std::size_t>(&getCurrentAimRank() - aimRanks.data());
+				// Two columns split at the vertical middle: the first half of the ranks is on the left, the rest on the right.
+				const std::size_t rankColumnRows = (aimRanks.size() + 1) / 2;
+				const float rankColumnSpacing = static_cast<float>(framebufferWidth) * 0.25f;
+				const float rankRowStep = 4.5f * fpsCellSize;
+				const float rankListTop = static_cast<float>(framebufferHeight) * 0.25f;
 				for (std::size_t rankIndex = 0; rankIndex < aimRanks.size(); ++rankIndex)
 				{
-					float rowTop = static_cast<float>(framebufferHeight) * 0.25f + static_cast<float>(rankIndex) * 4.5f * fpsCellSize;
+					const bool rightColumn = rankIndex >= rankColumnRows;
+					const std::size_t rowInColumn = rightColumn ? rankIndex - rankColumnRows : rankIndex;
+					const float columnCenterX = static_cast<float>(framebufferWidth) * 0.5f + (rightColumn ? 1.0f : -1.0f) * rankColumnSpacing * 0.5f;
+					float rowTop = rankListTop + static_cast<float>(rowInColumn) * rankRowStep;
 					const AimRank& rank = aimRanks[rankIndex];
 					std::string rankLine = std::string(rank.name) + " " + std::to_string(rank.minimumScore);
 					float rankCellSize = fpsCellSize * 0.8f;
 					float rankLineWidth = static_cast<float>(rankLine.size() * 4 - 1) * rankCellSize;
+					float rankLineLeft = columnCenterX - rankLineWidth * 0.5f;
 					std::vector<GLfloat> nameVertices = buildFpsVertices(rankLine,
-						framebufferWidth, framebufferHeight, rankCellSize, rowTop,
-						(static_cast<float>(framebufferWidth) - rankLineWidth) * 0.5f);
+						framebufferWidth, framebufferHeight, rankCellSize, rowTop, rankLineLeft);
 					std::size_t startVertex = fpsVertices.size() / 2;
 					rankLadderColors[rankIndex] = rank.color;
 					fpsVertices.insert(fpsVertices.end(), nameVertices.begin(), nameVertices.end());
 					if (rankIndex == currentRankIndex)
 					{
 						std::vector<GLfloat> checkVertices = buildFpsVertices(">", framebufferWidth, framebufferHeight,
-							rankCellSize, rowTop, (static_cast<float>(framebufferWidth) - rankLineWidth) * 0.5f - 6.0f * rankCellSize);
+							rankCellSize, rowTop, rankLineLeft - 6.0f * rankCellSize);
 						fpsVertices.insert(fpsVertices.end(), checkVertices.begin(), checkVertices.end());
 					}
 					rankLadderVertexStarts[rankIndex] = static_cast<GLint>(startVertex);
@@ -3404,7 +3479,7 @@ void main()
 				std::string progressText = scenarioHighScore >= aimRanks.back().minimumScore
 					? "MAX RANK"
 					: "NEXT " + std::to_string(std::max(0, nextRankMinimumScore - scenarioHighScore));
-				appendCenteredRankText(progressText, fpsCellSize, static_cast<float>(framebufferHeight) * 0.25f + static_cast<float>(aimRanks.size()) * 4.5f * fpsCellSize);
+				appendCenteredRankText(progressText, fpsCellSize, rankListTop + static_cast<float>(rankColumnRows) * rankRowStep);
 				const std::string displayedName = localPlayerName.empty() ? cloudAccountName : localPlayerName;
 				if (!displayedName.empty())
 					appendCenteredRankText(displayedName, fpsCellSize, static_cast<float>(framebufferHeight) * 0.09f);
@@ -3504,7 +3579,7 @@ void main()
 				}
 				}
 			}
-			if (gamePaused && !signUpForm.active && !rankMenuPage && !controlsMenuPage)
+			if (gamePaused && !signUpForm.active && !rankMenuPage && !controlsMenuPage && hasStartedScenario)
 			{
 				const std::string pauseLabel = "PAUSED";
 				float pauseCellSize = fpsCellSize * 2.0f;
@@ -3560,10 +3635,6 @@ void main()
 				appendCenteredSettingsText("VOLUME: " + std::to_string(static_cast<int>(std::round(audioVolume * 100.0f))),
 					settingsCellSize, volumeLabelTop);
 				float volumeSliderY = volumeLabelTop + 7.0f * settingsCellSize;
-				float targetSizeLabelTop = volumeLabelTop + 11.0f * settingsCellSize;
-				appendCenteredSettingsText("BALL SIZE: " + std::to_string(static_cast<int>(std::round(aimTargetSize * 100.0f))),
-					settingsCellSize, targetSizeLabelTop);
-				float targetSizeSliderY = targetSizeLabelTop + 7.0f * settingsCellSize;
 				float crosshairSelectorTop = sensitivityLabelTop + 36.0f * settingsCellSize;
 				float ballColorSelectorTop = sensitivityLabelTop + 48.0f * settingsCellSize;
 				appendCenteredSettingsText("CROSSHAIR: " + std::to_string(crosshairStyle + 1) + "/4", settingsCellSize, crosshairSelectorTop);
@@ -3575,8 +3646,6 @@ void main()
 					fpsVertices.push_back(1.0f - 2.0f * sensitivitySliderY / static_cast<float>(framebufferHeight));
 					fpsVertices.push_back(2.0f * pixelX / static_cast<float>(framebufferWidth) - 1.0f);
 					fpsVertices.push_back(1.0f - 2.0f * volumeSliderY / static_cast<float>(framebufferHeight));
-					fpsVertices.push_back(2.0f * pixelX / static_cast<float>(framebufferWidth) - 1.0f);
-					fpsVertices.push_back(1.0f - 2.0f * targetSizeSliderY / static_cast<float>(framebufferHeight));
 				}
 				auto appendSliderKnob = [&](float value, float sliderY)
 				{
@@ -3587,12 +3656,12 @@ void main()
 				};
 				appendSliderKnob((camera.sensitivity - 0.02f) / 0.28f, sensitivitySliderY);
 				appendSliderKnob(audioVolume, volumeSliderY);
-				appendSliderKnob((aimTargetSize - 0.25f) / 0.75f, targetSizeSliderY);
 			}
 			glm::vec3 hudPlayerBallPosition = camera.Position - glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
-			bool trainerHudVisible = !gamePaused &&
+			bool trainerHudVisible = (!gamePaused &&
 				hudPlayerBallPosition.x >= aimTrainerMinX && hudPlayerBallPosition.x <= aimTrainerMaxX &&
-				hudPlayerBallPosition.z >= aimTrainerMinZ && hudPlayerBallPosition.z <= aimTrainerMaxZ;
+				hudPlayerBallPosition.z >= aimTrainerMinZ && hudPlayerBallPosition.z <= aimTrainerMaxZ) ||
+				(!hasStartedScenario && !signUpForm.active);
 			scenarioPanelVisible = trainerHudVisible && !scenarioListHidden;
 			if (trainerHudVisible && !scenarioListHidden)
 			{
@@ -3687,9 +3756,9 @@ void main()
 							cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f);
 						fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
 					};
-					appendCenteredScenarioText(pineappleClickScenario ? "PINEAPPLE CLICK CLOSE EASY" : trackingScenario ? (trackingFarMediumScenario ? "SKY TRACK FAR MEDIUM" : (trackingMediumScenario ? "SKY TRACK MEDIUM" : (trackingFarScenario ? "SKY TRACK FAR" : "SKY TRACK"))) : (twoBallsScenario ? "DUO SPEED CLICK" : (sixBallsScenario ? "SIX BALLS" : "THREESHOT")), menuCellSize * 2.0f, static_cast<float>(framebufferHeight) * 0.28f);
+					appendCenteredScenarioText(pineappleClickScenario ? "PINEAPPLE CLICK CLOSE EASY" : trackingScenario ? (trackingCloseHardScenario ? "SKY TRACK CLOSE HARD" : trackingFarMediumScenario ? "SKY TRACK FAR MEDIUM" : trackingMediumScenario ? "SKY TRACK CLOSE MEDIUM" : trackingFarScenario ? "SKY TRACK FAR EASY" : "SKY TRACK CLOSE EASY") : twoBallsScenario ? "DUO SPEED CLICK" : sixBallsScenario ? "SIX COINS" : "THREESHOT", menuCellSize * 1.5f, static_cast<float>(framebufferHeight) * 0.22f);
 					appendCenteredScenarioText("HIGH SCORE", menuCellSize, static_cast<float>(framebufferHeight) * 0.38f);
-					appendCenteredScenarioText("LEADERBOARD", menuCellSize * 1.5f, static_cast<float>(framebufferHeight) * 0.66f);
+										appendCenteredScenarioText("LEADERBOARD", menuCellSize * 1.5f, static_cast<float>(framebufferHeight) * 0.66f);
 					std::string scenarioRankName = getCurrentAimRank().name;
 					float rankTextWidth = static_cast<float>(scenarioRankName.size() * 4 - 1) * menuCellSize * 2.0f;
 					std::vector<GLfloat> scenarioRankVertices = buildFpsVertices(scenarioRankName, framebufferWidth, framebufferHeight,
@@ -3699,8 +3768,31 @@ void main()
 					rankVertexCount = static_cast<GLsizei>(scenarioRankVertices.size() / 2);
 					currentRankColor = getCurrentAimRank().color;
 					fpsVertices.insert(fpsVertices.end(), scenarioRankVertices.begin(), scenarioRankVertices.end());
-					appendCenteredScenarioText("SCORE " + std::to_string(pineappleClickScenario ? pineappleHighScore : trackingScenario ? (trackingFarMediumScenario ? trackingFarMediumHighScore : (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore))) : (twoBallsScenario ? twoBallsHighScore : (sixBallsScenario ? sixBallsHighScore : aimHighScore))), menuCellSize, static_cast<float>(framebufferHeight) * 0.60f);
+					appendCenteredScenarioText("SCORE " + std::to_string(scenarioHighScore), menuCellSize, static_cast<float>(framebufferHeight) * 0.60f);
 				}
+			}
+			if (scenarioResultPage)
+			{
+				fpsVertices.clear();
+				const float resultMenuCell = std::max(2.0f, static_cast<float>(framebufferHeight) / 300.0f);
+				auto appendResultText = [&](const std::string& text, float cellSize, float top)
+				{
+					float width = static_cast<float>(text.size() * 4 - 1) * cellSize;
+					std::vector<GLfloat> vertices = buildFpsVertices(text, framebufferWidth, framebufferHeight,
+						cellSize, top, (static_cast<float>(framebufferWidth) - width) * 0.5f);
+					fpsVertices.insert(fpsVertices.end(), vertices.begin(), vertices.end());
+				};
+				appendResultText(scenarioResultName, resultMenuCell * 2.0f, static_cast<float>(framebufferHeight) * 0.28f);
+				appendResultText("SCORE " + std::to_string(scenarioResultScore), resultMenuCell * 2.0f, static_cast<float>(framebufferHeight) * 0.42f);
+				appendResultText("RANK " + scenarioResultRankName, resultMenuCell * 1.5f, static_cast<float>(framebufferHeight) * 0.50f);
+				appendResultText("ACCURACY " + std::to_string(scenarioResultAccuracy) + "%", resultMenuCell * 1.5f, static_cast<float>(framebufferHeight) * 0.56f);
+				appendResultText("HIGH SCORE " + std::to_string(scenarioResultHighScore), resultMenuCell, static_cast<float>(framebufferHeight) * 0.60f);
+				std::vector<GLfloat> backVertices = buildFpsVertices("BACK", framebufferWidth, framebufferHeight,
+					resultMenuCell * 1.5f, static_cast<float>(framebufferHeight) - 48.0f * resultMenuCell,
+					(static_cast<float>(framebufferWidth) - 17.0f * resultMenuCell) * 0.5f);
+				fpsVertices.insert(fpsVertices.end(), backVertices.begin(), backVertices.end());
+				rankVertexStart = static_cast<GLint>(fpsVertices.size() / 2);
+				rankVertexCount = 0;
 			}
 			glBindBuffer(GL_ARRAY_BUFFER, fpsVBO);
 			glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(fpsVertices.size() * sizeof(GLfloat)), fpsVertices.data(), GL_DYNAMIC_DRAW);
@@ -3708,9 +3800,11 @@ void main()
 		}
 
 		if (!gamePaused)
+		{
 			camera.Inputs(true, !scenarioMenuCursorFree);
+		}
 
-		playerMovementLocked = aimTaskRunning;
+		playerMovementLocked = aimTaskRunning || scenarioMenuCursorFree;
 		bool cameraJumpPressed = !gamePaused && !playerMovementLocked && platform::isKeyDown(platform::Key::Space);
 		jumpBufferRemaining = cameraJumpPressed
 			? 0.12f
@@ -3925,20 +4019,27 @@ void main()
 		if (!gamePaused)
 			wasAimTrainerActive = aimTrainerActive;
 		bool scenarioMenuVisible = !gamePaused && aimTrainerActive && !aimTaskRunning && !scenarioListHidden;
-		bool wantCursorFree = gamePaused || scenarioMenuVisible;
-		if (wantCursorFree != scenarioMenuCursorFree)
+		bool wantCursorFree = gamePaused || scenarioMenuVisible || scenarioResultPage;
+		// Compare against the real window state, not a cache, so the cursor cannot get stuck.
+		// Captured (disabled) is the opposite of free, so a mismatch means captured == wantCursorFree.
+		if (platform::isCursorCaptured() == wantCursorFree)
 		{
 			platform::setCursorCaptured(!wantCursorFree);
-			scenarioMenuCursorFree = wantCursorFree;
 			camera.mouseInitialized = false;
 		}
+		scenarioMenuCursorFree = wantCursorFree;
 		trackingSoundCooldown = std::max(0.0f, trackingSoundCooldown - deltaTime);
 		if (!gamePaused && aimTaskRunning && trackingScenario)
 		{
 			float trackingElapsed = static_cast<float>(aimTaskClockTime - aimTaskStartTime);
-			if (trackingFarMediumScenario)
+			if (trackingCloseHardScenario)
 			{
-				trackingBallPosition.x = trackingFarMediumOffsetX + 5.0f * std::sin(trackingElapsed * 1.1f) + 2.0f * std::sin(trackingElapsed * 2.1f + 0.5f)
+				trackingBallPosition.x = 8.0f * std::sin(trackingElapsed * 1.3f) + 4.0f * std::sin(trackingElapsed * 2.1f + 0.8f) + 2.0f * std::sin(trackingElapsed * 3.1f);
+				trackingBallPosition.y = ballGroundY + 4.0f + 2.5f * std::sin(trackingElapsed * 1.1f + 1.0f) + 1.0f * std::sin(trackingElapsed * 2.2f);
+			}
+			else if (trackingFarMediumScenario)
+			{
+				trackingBallPosition.x = trackingFarMediumOffsetX
 					+ 1.0f * std::sin(trackingElapsed * 0.5f);
 				trackingBallPosition.y = ballGroundY + 4.0f + 1.5f * std::sin(trackingElapsed * 0.9f + 1.0f)
 					+ 0.5f * std::sin(trackingElapsed * 2.3f);
@@ -3956,7 +4057,7 @@ void main()
 					+ 4.0f * std::sin(trackingElapsed * 0.9f) + 2.0f * std::sin(trackingElapsed * 0.37f);
 				trackingBallPosition.y = ballGroundY + 4.0f + 1.5f * std::sin(trackingElapsed * 0.6f + 1.0f);
 			}
-			trackingBallPosition.z = -26.0f;
+			trackingBallPosition.z = -36.0f;
 		}
 		if (!gamePaused && aimTaskRunning && twoBallsScenario)
 		{
@@ -3977,6 +4078,8 @@ void main()
 			}
 		}
 		bool trackingBallHit = false;
+		if (!gamePaused && aimTaskRunning && trackingScenario)
+			trackingRunTime += static_cast<float>(deltaTime);
 		if (!gamePaused && aimTaskRunning && trackingScenario && platform::isLeftMouseDown())
 		{
 			glm::vec3 rayOrigin = camera.Position;
@@ -3984,9 +4087,12 @@ void main()
 			glm::vec3 rayDirection = glm::normalize(camera.Orientation);
 			float alongRay = glm::dot(toBall, rayDirection);
 			float closestDistance = glm::length(toBall - rayDirection * alongRay);
-			if (alongRay > 0.0f && closestDistance <= aimTargetSize * trackingBallSizeMultiplier)
+			const float trackingSizeMultiplier = trackingCloseHardScenario ? trackingCloseHardSizeMultiplier : trackingBallSizeMultiplier;
+			const float trackingHitRadius = aimTargetSize * 2.0f * trackingSizeMultiplier * (trackingBallHeld ? 1.25f : 1.0f);
+			if (alongRay > 0.0f && closestDistance <= trackingHitRadius)
 			{
 				trackingScoreAccumulator += trackingPointsPerSecond * deltaTime;
+				trackingOnTargetTime += static_cast<float>(deltaTime);
 				trackingBallHit = true;
 				if (!trackingBallHeld)
 				{
@@ -4018,14 +4124,24 @@ void main()
 			scenarioListHidden = false;
 			playerMovementLocked = false;
 			aimTaskFinishedTime = currentTime;
+			scenarioResultName = pineappleClickScenario ? "PINEAPPLE CLICK CLOSE EASY" : trackingScenario ? (trackingCloseHardScenario ? "SKY TRACK CLOSE HARD" : trackingFarMediumScenario ? "SKY TRACK FAR MEDIUM" : trackingMediumScenario ? "SKY TRACK CLOSE MEDIUM" : trackingFarScenario ? "SKY TRACK FAR EASY" : "SKY TRACK CLOSE EASY") : twoBallsScenario ? "DUO SPEED CLICK" : sixBallsScenario ? "SIX COINS" : "THREESHOT";
+			scenarioResultScore = aimTaskScore;
+			if (trackingScenario)
+				scenarioResultAccuracy = trackingRunTime > 0.0f ? static_cast<int>(std::round(100.0f * trackingOnTargetTime / trackingRunTime)) : 0;
+			else
+				scenarioResultAccuracy = aimTaskShots > 0 ? static_cast<int>(std::round(100.0f * static_cast<float>(aimTaskHits) / static_cast<float>(aimTaskShots))) : 0;
+			const AimRank& resultRank = getAimRankForScore(scenarioResultScore);
+			scenarioResultRankName = resultRank.name;
+			scenarioResultPage = true;
+			scenarioListHidden = true;
 			if (sixBallsScenario)
 				completedSixBallsOnce = true;
 			else if (twoBallsScenario)
 				completedTwoBallsOnce = true;
 			else
 				completedThreeBallsOnce = true;
-			int& scenarioHighScore = pineappleClickScenario ? pineappleHighScore : trackingScenario ? (trackingFarMediumScenario ? trackingFarMediumHighScore : (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore))) : (twoBallsScenario ? twoBallsHighScore : (sixBallsScenario ? sixBallsHighScore : aimHighScore));
-						const fs::path& scenarioHighScorePath = pineappleClickScenario ? pineappleHighScorePath : trackingScenario ? (trackingFarMediumScenario ? trackingFarMediumHighScorePath : (trackingMediumScenario ? trackingMediumHighScorePath : (trackingFarScenario ? trackingFarHighScorePath : trackingHighScorePath))) : (twoBallsScenario ? twoBallsHighScorePath : aimHighScorePath);
+			int& scenarioHighScore = pineappleClickScenario ? pineappleHighScore : trackingScenario ? (trackingCloseHardScenario ? trackingCloseHardHighScore : trackingFarMediumScenario ? trackingFarMediumHighScore : (trackingMediumScenario ? trackingMediumHighScore : (trackingFarScenario ? trackingFarHighScore : trackingHighScore))) : (twoBallsScenario ? twoBallsHighScore : (sixBallsScenario ? sixBallsHighScore : aimHighScore));
+						const fs::path& scenarioHighScorePath = pineappleClickScenario ? pineappleHighScorePath : trackingScenario ? (trackingCloseHardScenario ? trackingCloseHardHighScorePath : trackingFarMediumScenario ? trackingFarMediumHighScorePath : (trackingMediumScenario ? trackingMediumHighScorePath : (trackingFarScenario ? trackingFarHighScorePath : trackingHighScorePath))) : (twoBallsScenario ? twoBallsHighScorePath : aimHighScorePath);
 			if (aimTaskScore > scenarioHighScore)
 			{
 				scenarioHighScore = aimTaskScore;
@@ -4053,6 +4169,7 @@ void main()
 					}
 				}
 			}
+			scenarioResultHighScore = scenarioHighScore;
 			aimTaskScore = 0;
 			trackingScoreAccumulator = 0.0f;
 			// Clear the selected scenario only after the score and completion logic above has used it,
@@ -4063,9 +4180,10 @@ void main()
 			trackingFarScenario = false;
 			trackingMediumScenario = false;
 			trackingFarMediumScenario = false;
+			trackingCloseHardScenario = false;
 			pineappleClickScenario = false;
 		}
-		if (aimTrainerActive)
+		if (aimTrainerActive || aimTaskRunning)
 		{
 			camera.Position = playerBallRenderPosition + glm::vec3(0.0f, 1.6f, 0.0f);
 			camera.Orientation = simulationOrientation;
@@ -4082,7 +4200,7 @@ void main()
 			scenarioListDragging = false;
 		bool scenarioSelectorClicked = false;
 		const double scrollWheelDelta = platform::consumeScrollWheel();
-		if (scrollWheelDelta != 0.0 && !gamePaused && aimTrainerActive && !aimTaskRunning && scenarioPanelVisible)
+		if (scrollWheelDelta != 0.0 && (!gamePaused || !hasStartedScenario) && (aimTrainerActive || !hasStartedScenario) && !aimTaskRunning && scenarioPanelVisible)
 		{
 			int wheelFramebufferWidth = 0;
 			int wheelFramebufferHeight = 0;
@@ -4094,7 +4212,6 @@ void main()
 			if (wheelFramebufferHeight > 0 && wheelTotal > scenarioListVisibleRows)
 			{
 				const float wheelCellSize = fpsCellSize;
-				const float wheelRowSpacing = 8.0f * wheelCellSize;
 				const float wheelTop = static_cast<float>(wheelFramebufferHeight) * 0.5f - 17.5f * wheelCellSize;
 				const float wheelX = static_cast<float>(wheelCursorX);
 				const float wheelY = static_cast<float>(wheelCursorY);
@@ -4113,7 +4230,7 @@ void main()
 				}
 			}
 		}
-		if (!gamePaused && aimTrainerActive && !aimTaskRunning && leftMousePressed && scenarioListDragging)
+		if ((!gamePaused || !hasStartedScenario) && (aimTrainerActive || !hasStartedScenario) && !aimTaskRunning && leftMousePressed && scenarioListDragging)
 		{
 			int dragFramebufferWidth = 0;
 			int dragFramebufferHeight = 0;
@@ -4133,7 +4250,30 @@ void main()
 					std::lround(dragFraction * static_cast<float>(dragTotal - scenarioListVisibleRows)));
 			}
 		}
-		if (!gamePaused && aimTrainerActive && !aimTaskRunning && leftMousePressed && !previousLeftMouse)
+		if (scenarioResultPage && leftMousePressed && !previousLeftMouse)
+		{
+			int resultFramebufferWidth = 0;
+			int resultFramebufferHeight = 0;
+			platform::getFramebufferSize(resultFramebufferWidth, resultFramebufferHeight);
+			double resultCursorX = 0.0;
+			double resultCursorY = 0.0;
+			platform::getCursorPosition(resultCursorX, resultCursorY);
+			const float resultCellSize = std::max(2.0f, static_cast<float>(resultFramebufferHeight) / 300.0f);
+			const float resultBackTop = static_cast<float>(resultFramebufferHeight) - 48.0f * resultCellSize;
+			const float resultBackCenterX = static_cast<float>(resultFramebufferWidth) * 0.5f;
+			const float resultClickX = static_cast<float>(resultCursorX);
+			const float resultClickY = static_cast<float>(resultCursorY);
+			if (resultClickX >= resultBackCenterX - 20.0f * resultCellSize && resultClickX <= resultBackCenterX + 20.0f * resultCellSize &&
+				resultClickY >= resultBackTop - 5.0f * resultCellSize && resultClickY <= resultBackTop + 12.0f * resultCellSize)
+			{
+				scenarioResultPage = false;
+				aimTaskFinished = false;
+				scenarioListHidden = false;
+				// Results page closed: let the per-frame check recapture the cursor for the menu.
+				camera.mouseInitialized = false;
+			}
+		}
+		if ((!gamePaused || !hasStartedScenario) && (aimTrainerActive || !hasStartedScenario) && !aimTaskRunning && leftMousePressed && !previousLeftMouse)
 		{
 			int selectorFramebufferWidth = 0;
 			int selectorFramebufferHeight = 0;
@@ -4172,7 +4312,7 @@ void main()
 					clickY >= clickedRowTop && clickY <= clickedRowTop + selectorCellSize * 5.0f &&
 					clickX >= rowLeft && clickX <= rowLeft + rowWidth)
 				{
-					if (clickedRow >= 0 && clickedRow != 7)
+					if (clickedRow >= 0 && clickedRow != 8)
 						pineappleClickScenario = false;
 					if (clickedRow == 0)
 					{
@@ -4182,6 +4322,7 @@ void main()
 						trackingFarScenario = false;
 						trackingMediumScenario = false;
 						trackingFarMediumScenario = false;
+						trackingCloseHardScenario = false;
 						scenarioSelectorClicked = true;
 					}
 					else if (clickedRow == 1 && !twoBallsScenario)
@@ -4192,6 +4333,7 @@ void main()
 						trackingFarScenario = false;
 						trackingMediumScenario = false;
 						trackingFarMediumScenario = false;
+						trackingCloseHardScenario = false;
 						scenarioSelectorClicked = true;
 					}
 					else if (clickedRow == 2 && !sixBallsScenario)
@@ -4202,9 +4344,10 @@ void main()
 						trackingFarScenario = false;
 						trackingMediumScenario = false;
 						trackingFarMediumScenario = false;
+						trackingCloseHardScenario = false;
 						scenarioSelectorClicked = true;
 					}
-					else if (clickedRow == 3 && (!trackingScenario || trackingFarScenario || trackingMediumScenario || trackingFarMediumScenario))
+					else if (clickedRow == 3 && (!trackingScenario || trackingFarScenario || trackingMediumScenario || trackingFarMediumScenario || trackingCloseHardScenario))
 					{
 						twoBallsScenario = false;
 						sixBallsScenario = false;
@@ -4212,9 +4355,10 @@ void main()
 						trackingFarScenario = false;
 						trackingMediumScenario = false;
 						trackingFarMediumScenario = false;
+						trackingCloseHardScenario = false;
 						scenarioSelectorClicked = true;
 					}
-					else if (clickedRow == 4 && (!trackingFarScenario || trackingMediumScenario || trackingFarMediumScenario))
+					else if (clickedRow == 4 && (!trackingFarScenario || trackingMediumScenario || trackingFarMediumScenario || trackingCloseHardScenario))
 					{
 						twoBallsScenario = false;
 						sixBallsScenario = false;
@@ -4222,6 +4366,7 @@ void main()
 						trackingFarScenario = true;
 						trackingMediumScenario = false;
 						trackingFarMediumScenario = false;
+						trackingCloseHardScenario = false;
 						scenarioSelectorClicked = true;
 					}
 					else if (clickedRow == 5 && !trackingMediumScenario)
@@ -4232,6 +4377,7 @@ void main()
 						trackingFarScenario = false;
 						trackingMediumScenario = true;
 						trackingFarMediumScenario = false;
+						trackingCloseHardScenario = false;
 						scenarioSelectorClicked = true;
 					}
 					else if (clickedRow == 6 && !trackingFarMediumScenario)
@@ -4242,9 +4388,21 @@ void main()
 						trackingFarScenario = false;
 						trackingMediumScenario = false;
 						trackingFarMediumScenario = true;
+						trackingCloseHardScenario = false;
 						scenarioSelectorClicked = true;
 					}
-					else if (clickedRow == 7 && !pineappleClickScenario)
+					else if (clickedRow == 7 && !trackingCloseHardScenario)
+					{
+						twoBallsScenario = false;
+						sixBallsScenario = false;
+						trackingScenario = true;
+						trackingFarScenario = false;
+						trackingMediumScenario = false;
+						trackingFarMediumScenario = false;
+						trackingCloseHardScenario = true;
+						scenarioSelectorClicked = true;
+					}
+					else if (clickedRow == 8 && !pineappleClickScenario)
 					{
 						twoBallsScenario = false;
 						sixBallsScenario = false;
@@ -4252,12 +4410,32 @@ void main()
 						trackingFarScenario = false;
 						trackingMediumScenario = false;
 						trackingFarMediumScenario = false;
+						trackingCloseHardScenario = false;
 						pineappleClickScenario = true;
 						scenarioSelectorClicked = true;
 					}
 					if (scenarioSelectorClicked)
 					{
+						playerModelVisible = true;
+						hasStartedScenario = true;
+						gamePaused = false;
+						// Teleport the player to the fixed start spot every time a scenario starts.
+						const glm::vec3 scenarioStartCenter(0.0f, ballGroundY, (aimTrainerMinZ + aimTrainerMaxZ) * 0.5f);
+						balls[playerBallIndex].position = scenarioStartCenter;
+						balls[playerBallIndex].velocity = glm::vec3(0.0f);
+						camera.Position = scenarioStartCenter + glm::vec3(0.0f, cameraToPlayerBallOffset, 0.0f);
+						previousCameraPosition = camera.Position;
+						camera.horizontalVelocity = glm::vec3(0.0f);
+						cameraVerticalVelocity = 0.0f;
+						// Recapture the cursor when the scenario starts; the cached cursor state would otherwise keep it hidden.
+						platform::setCursorCaptured(true);
+						scenarioMenuCursorFree = false;
+						camera.mouseInitialized = false;
 						aimTaskScore = 0;
+						aimTaskShots = 0;
+						aimTaskHits = 0;
+						trackingOnTargetTime = 0.0f;
+						trackingRunTime = 0.0f;
 						aimTaskFinished = false;
 						scenarioListHidden = true;
 						aimTaskRunning = true;
@@ -4273,10 +4451,11 @@ void main()
 				}
 			}
 		}
-		if (!gamePaused && aimTrainerActive && aimTaskRunning && leftMousePressed && !previousLeftMouse && !trackingScenario)
+		if (!gamePaused && aimTaskRunning && leftMousePressed && !previousLeftMouse && !trackingScenario)
 		{
 			if (!scenarioSelectorClicked)
 			{
+				++aimTaskShots;
 				glm::vec3 shotDirection = glm::normalize(camera.Orientation);
 				float closestHitDistance = std::numeric_limits<float>::max();
 				int hitTargetIndex = -1;
@@ -4295,7 +4474,7 @@ void main()
 
 					float perpendicularDistanceSquared = glm::dot(toTarget, toTarget) - alongRay * alongRay;
 					float targetHitRadius = ballRadius * aimTargetSize *
-						(sixBallsScenario ? sixBallTargetSizeMultiplier : 1.0f);
+						(pineappleClickScenario ? pineappleTargetSizeMultiplier : (sixBallsScenario ? sixBallTargetSizeMultiplier : 1.0f));
 					if (perpendicularDistanceSquared <= targetHitRadius * targetHitRadius)
 					{
 						closestHitDistance = alongRay;
@@ -4304,6 +4483,7 @@ void main()
 				}
 				if (hitTargetIndex >= 0)
 				{
+					++aimTaskHits;
 					aimTaskScore += 10;
 					if (pineappleClickScenario)
 							respawnPineappleTarget(static_cast<std::size_t>(hitTargetIndex));
@@ -4329,9 +4509,10 @@ void main()
 		glm::mat4 skyboxProjection = glm::perspective(glm::radians(45.0f),
 			static_cast<float>(camera.width) / static_cast<float>(camera.height), 0.1f, 500.0f);
 		glm::mat4 skyboxView = glm::lookAt(glm::vec3(0.0f), camera.Orientation, camera.Up);
-		float dayCyclePhase = static_cast<float>(std::fmod(platform::getTime() - dayNightStartTime, dayNightCycleSeconds) / dayNightCycleSeconds);
-		float sunHeight = std::sin(dayCyclePhase * 6.2831853f - 1.5707963f);
-		float dayAmount = glm::smoothstep(-0.18f, 0.22f, sunHeight);
+		// Day only: the sun is fixed at midday, so the scene is always lit as day.
+		const float dayCyclePhase = 0.25f;
+		const float sunHeight = std::sin(dayCyclePhase * 6.2831853f - 1.5707963f);
+		const float dayAmount = 1.0f;
 		glm::vec3 sunDirection = glm::normalize(glm::vec3(std::cos(dayCyclePhase * 6.2831853f), sunHeight, 0.25f));
 		glm::vec3 sceneLightColor = glm::mix(glm::vec3(0.18f, 0.22f, 0.38f), glm::vec3(1.0f, 0.92f, 0.78f), dayAmount);
 		glUseProgram(shaderProgram.ID);
@@ -4366,6 +4547,8 @@ void main()
 		};
 		for (std::size_t ballIndex = 0; ballIndex < balls.size(); ++ballIndex)
 		{
+			if (ballIndex == playerBallIndex && !playerModelVisible)
+				continue;
 			glm::vec3 ballShadowPosition = balls[ballIndex].position;
 			if (ballIndex == playerBallIndex)
 				ballShadowPosition = playerBallRenderPosition;
@@ -4380,6 +4563,8 @@ void main()
 		glDisable(GL_BLEND);
 		for (std::size_t ballIndex = 0; ballIndex < balls.size(); ++ballIndex)
 		{
+			if (ballIndex == playerBallIndex && !playerModelVisible)
+				continue;
 			glm::vec3 ballRenderPosition = balls[ballIndex].position;
 			if (ballIndex == playerBallIndex)
 				ballRenderPosition = playerBallRenderPosition;
@@ -4392,7 +4577,7 @@ void main()
 		if (pineappleClickScenario)
 		{
 			for (const glm::vec3& targetPosition : pineappleTargets)
-				orbModel.DrawWithTint(shaderProgram, camera, targetPosition, ballColorOptions[static_cast<std::size_t>(ballColorIndex)].color, glm::vec3(aimTargetSize));
+				orbModel.DrawWithTint(shaderProgram, camera, targetPosition, ballColorOptions[static_cast<std::size_t>(ballColorIndex)].color, glm::vec3(aimTargetSize * pineappleTargetSizeMultiplier));
 		}
 		else if (sixBallsScenario)
 		{
@@ -4406,7 +4591,7 @@ void main()
 		else if (trackingScenario)
 		{
 			orbModel.DrawWithTint(shaderProgram, camera, trackingBallPosition,
-				ballColorOptions[static_cast<std::size_t>(ballColorIndex)].color, glm::vec3(aimTargetSize * trackingBallSizeMultiplier));
+				ballColorOptions[static_cast<std::size_t>(ballColorIndex)].color, glm::vec3(aimTargetSize * (trackingCloseHardScenario ? trackingCloseHardSizeMultiplier : trackingBallSizeMultiplier)));
 		}
 		else if (twoBallsScenario)
 		{

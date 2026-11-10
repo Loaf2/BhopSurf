@@ -103,5 +103,5 @@ void main()
 	float solidDiffuse = max(dot(normalize(Normal), normalize(sunDirection)), 0.0);
 	vec3 solidLighting = ambientColor + solidDiffuse * max(lightColor.rgb, vec3(0.0));
 	vec3 baseColor = useSolidBaseColor != 0 ? solidBaseColor * solidLighting : litColor.rgb;
-	FragColor = vec4(baseColor * objectTint, litColor.a);
+	FragColor = vec4(baseColor * objectTint, 1.0);
 }

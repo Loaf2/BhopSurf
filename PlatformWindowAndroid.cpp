@@ -864,6 +864,16 @@ bool isLeftMouseDown()
 	return g_leftMouseDown;
 }
 
+bool isMiddleMouseDown()
+{
+	return false;
+}
+
+double consumeScrollWheel()
+{
+	return 0.0;
+}
+
 void getCursorPosition(double& x, double& y)
 {
 	x = g_pointerX;

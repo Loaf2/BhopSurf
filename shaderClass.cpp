@@ -1,3 +1,4 @@
+#include <cstring>
 #include"shaderClass.h"
 
 #ifdef __ANDROID__
@@ -72,7 +73,7 @@ void Shader::compileErrors(unsigned int shader, const char* type)
 {
 	GLint hasCompiled;
 	char infoLog[1024];
-	if (type != "PROGRAM")
+	if (std::strcmp(type, "PROGRAM") != 0)
 	{
 		glGetShaderiv(shader, GL_COMPILE_STATUS, &hasCompiled);
 		if (hasCompiled == GL_FALSE)

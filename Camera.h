@@ -2,6 +2,11 @@
 #define CAMERA_CLASS_H
 
 #include <glad/glad.h>
+
+#ifndef GLM_ENABLE_EXPERIMENTAL
+#define GLM_ENABLE_EXPERIMENTAL
+#endif
+
 #include <glm/glm.hpp>
 #include "PlatformWindow.h"
 #include<glm/gtc/matrix_transform.hpp>

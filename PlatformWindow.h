@@ -68,10 +68,13 @@ void swapBuffers();
 void pollEvents();
 bool isKeyDown(Key key);
 bool isLeftMouseDown();
+bool isMiddleMouseDown();
+double consumeScrollWheel();
 void getCursorPosition(double& x, double& y);
 void getLookPosition(double& x, double& y);
 void getFramebufferSize(int& width, int& height);
 void setCursorCaptured(bool captured);
+bool isCursorCaptured();
 double getTime();
 void* getProcAddress(const char* name);
 }
